@@ -28,7 +28,10 @@ def check_topology(d: Design, diags: Diagnostics) -> None:
             continue
         if not net.drivers:
             who = ", ".join(p.path for p in net.sinks)
-            diags.error("undriven-net", f"net '{net.name}' has no source (feeds {who})", net.span, net.name)
+            hint = (f"; it is port '{net.port}' — analyse this board from the design that instantiates it, "
+                    f"or add a test provider") if net.port else ""
+            diags.error("undriven-net", f"net '{net.name}' has no source (feeds {who}){hint}", net.span,
+                        net.name)
         elif not net.sinks:
             diags.warning("unloaded-net", f"net '{net.name}' drives nothing", net.span, net.name)
         if len(net.drivers) > 1:

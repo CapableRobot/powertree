@@ -1,24 +1,30 @@
-"""Pipeline layers 1-3: syntax, structure, model building and references."""
+"""Pipeline layers 1-3: syntax, structure, model building (with part merge,
+counts and board hierarchy flattening) and reference resolution."""
 from __future__ import annotations
 
 import difflib
 import os
+import re
+from dataclasses import dataclass, field
 from typing import Any
 
-from . import schema
+from . import paths, schema
 from .diagnostics import Diagnostics
 from .kdl import KdlError, Node, Span, parse
-from .model import (Chip, Design, EffTable, Efficiency, Function, Load, Net, Port,
-                    ScenarioDef, Waiver)
-from .units import fmt, VOLT
+from .libs import library_roots, stamp
+from .model import (Board, Chip, Design, EffTable, Efficiency, Function, Library, Load, Net, Port,
+                    ScenarioDef, SetOp, Waiver)
+from .units import VOLT, VSpec, fmt
 
-# properties a scenario `set` may change, per function kind
+# properties a scenario `set` may change, per target kind
 SETTABLE: dict[str, dict[str, object]] = {
     "*": {"on": schema.BOOL},
     "consumer": {"i": schema.A, "p": schema.W, "r": schema.OHM},
     "provider": {"v": schema.VSPEC, "imax": schema.A},
     "converter": {"v": schema.VSPEC},
+    "board": {"scenario": schema.NAME, "on": schema.BOOL},
 }
+_BAD_REF_CHARS = re.compile(r"[.:{}]")
 
 
 def _suggest(word: str, options) -> str:
@@ -40,13 +46,23 @@ def _fname(fn: Node) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Layer 1 + 2: parse files, validate structure, collect parts
+# Layers 1 + 2: files, `use`, library roots, structure validation
 # ---------------------------------------------------------------------------
+@dataclass
+class _Def:
+    nodes: list[Node]
+    file: str
+    ns: str
+    span: Span
+
+
 class _Files:
-    def __init__(self, diags: Diagnostics):
+    def __init__(self, diags: Diagnostics, roots: dict[str, Library]):
         self.diags = diags
-        self.seen: set[str] = set()
-        self.parts: dict[str, tuple[Node, str]] = {}
+        self.roots = roots
+        self.seen: dict[str, str] = {}              # realpath -> namespace
+        self.parts: dict[tuple[str, str], _Def] = {}
+        self.designs: dict[tuple[str, str], _Def] = {}
 
     def read(self, path: str, via: Span | None = None) -> list[Node] | None:
         try:
@@ -63,30 +79,80 @@ class _Files:
         schema.validate(nodes, self.diags)
         return nodes
 
-    def collect(self, nodes: list[Node], path: str, library: bool) -> None:
-        self.seen.add(os.path.realpath(path))
+    def _target(self, spec: str, base: str, ns: str, span: Span) -> tuple[str, str] | None:
+        m = re.match(r"^([A-Za-z_][\w-]+):(?![\\/])(.+)$", spec)
+        if m:
+            name, rel = m.groups()
+            lib = self.roots.get(name)
+            if lib is None:
+                known = ", ".join(self.roots) or "none configured"
+                self.diags.error("library", f"unknown library '{name}'{_suggest(name, self.roots)} "
+                                            f"(known: {known})", span)
+                return None
+            return os.path.normpath(os.path.join(lib.path, rel)), name
+        return os.path.normpath(os.path.join(base, spec)), ns
+
+    def collect(self, nodes: list[Node], path: str, ns: str, main: bool) -> None:
+        self.seen[os.path.realpath(path)] = ns
+        if ns and ns in self.roots:
+            self.roots[ns].files.append(path)
         base = os.path.dirname(path)
+        design = next((n for n in nodes if n.name == "design" and n.args), None)
+        if design is not None and not main:
+            key = (ns, str(design.args[0].value))
+            if key in self.designs:
+                self.diags.error("duplicate-design", f"design '{key[1]}' is defined more than once "
+                                                     f"(also at {self.designs[key].span})", design.span)
+            else:
+                self.designs[key] = _Def(nodes, path, ns, design.span)
         for n in nodes:
             if n.name == "part" and n.args:
-                name = str(n.args[0].value)
-                if name in self.parts:
-                    prev = self.parts[name][0]
-                    self.diags.error("duplicate-part",
-                                     f"part '{name}' is defined more than once (also at {prev.span})",
-                                     n.span)
+                key = (ns, str(n.args[0].value))
+                if key in self.parts:
+                    self.diags.error("duplicate-part", f"part '{key[1]}' is defined more than once "
+                                                       f"(also at {self.parts[key].span})", n.span)
                 else:
-                    self.parts[name] = (n, path)
+                    self.parts[key] = _Def([n], path, ns, n.span)
             elif n.name == "use" and n.args and isinstance(n.args[0].value, str):
-                target = os.path.normpath(os.path.join(base, n.args[0].value))
+                t = self._target(n.args[0].value, base, ns, n.args[0].span)
+                if t is None:
+                    continue
+                target, tns = t
                 if os.path.realpath(target) in self.seen:
                     continue
                 sub = self.read(target, n.args[0].span)
                 if sub is not None:
-                    self.collect(sub, target, library=True)
-            elif library and n.name not in ("part", "use"):
+                    self.collect(sub, target, tns, main=False)
+            elif not main and design is None and n.name not in ("part", "use"):
                 self.diags.warning("ignored-in-library",
-                                   f"'{n.name}' in a used file is ignored (only part and use are read)",
+                                   f"'{n.name}' in a used file without a design node is ignored",
                                    n.span)
+
+    def lookup(self, table: dict, name: str, what: str, span: Span, required: bool) -> _Def | None:
+        if ":" in name:
+            ns, bare = name.split(":", 1)
+            d = table.get((ns, bare))
+            if d is None and required:
+                self.diags.error(f"unknown-{what}", f"no {what} '{bare}' in library '{ns}'", span)
+            return d
+        hits = [(k, v) for k, v in table.items() if k[1] == name]
+        if len(hits) > 1:
+            where = ", ".join(f"{k[0] + ':' if k[0] else ''}{name} ({v.file})" for k, v in hits)
+            self.diags.error(f"ambiguous-{what}", f"{what} '{name}' is defined in several places: {where}; "
+                                                   f"qualify it as <library>:{name}", span)
+            return None
+        if hits:
+            return hits[0][1]
+        names = {(f"{k[0]}:{k[1]}" if k[0] else k[1]) for k in table}
+        # part numbers are similar by nature: only flag near-identical names when not required
+        m = difflib.get_close_matches(name, list(names), n=1, cutoff=0.6 if required else 0.9)
+        sugg = f" (did you mean '{m[0]}'?)" if m else ""
+        if required:
+            self.diags.error(f"unknown-{what}", f"no {what} '{name}'{sugg}", span)
+        elif sugg:
+            self.diags.warning(f"unknown-{what}", f"{what} '{name}' is not in any loaded file{sugg}; "
+                                                   f"treating it as a label", span)
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -118,9 +184,8 @@ def _merge_function(lib: Node, inst: Node) -> Node:
     return out
 
 
-def _chip_functions(chip: Node, parts: dict, diags: Diagnostics) -> list[Node]:
+def _chip_functions(chip: Node, part: Node | None, diags: Diagnostics) -> list[Node]:
     part_name = chip.props.get("part")
-    part = parts.get(part_name.value)[0] if part_name and part_name.value in parts else None
     if part is None:
         return list(chip.children)
     inst = {_fname(f): f for f in chip.children}
@@ -152,7 +217,7 @@ _PORTS = {  # kind -> (min ins, max ins, outs)
 
 def _build_port(pn: Node, direction: str, f: Function, index: int) -> Port:
     p = Port(direction, f, index, span=pn.span)
-    p.net = _conv(pn, "net", schema.NAME)
+    p.net = p.net_local = _conv(pn, "net", schema.NAME)
     p.from_ref = _conv(pn, "from", schema.NAME)
     p.imax = _conv(pn, "imax", schema.A)
     p.share = _conv(pn, "share", schema.BOOL, False)
@@ -319,29 +384,135 @@ def _build_function(fn: Node, chip: Chip, diags: Diagnostics) -> Function:
     return f
 
 
-def _build(nodes: list[Node], path: str, parts: dict, diags: Diagnostics) -> Design:
-    designs = [n for n in nodes if n.name == "design"]
-    if len(designs) != 1:
-        diags.error("design", "a design file needs exactly one 'design <name>' node",
-                    designs[1].span if len(designs) > 1 else None)
-    d = Design(str(designs[0].args[0].value) if designs and designs[0].args else "design", path)
 
-    for n in nodes:
-        if n.name == "net":
-            name = str(n.args[0].value)
-            if name in d.nets:
-                diags.error("duplicate-net", f"net '{name}' declared twice (also at {d.nets[name].span})",
-                            n.span)
+# ---------------------------------------------------------------------------
+# Layer 3a: build the flattened model
+# ---------------------------------------------------------------------------
+def _tmpl(s: str | None, n: int | None, span: Span, diags: Diagnostics, what: str) -> str | None:
+    if s is None or "{n}" not in s:
+        return s
+    if n is None:
+        diags.error("template", f"{what} '{s}' uses {{n}} but its node has no count=", span)
+        return s.replace("{n}", "?")
+    return s.replace("{n}", str(n))
+
+
+def _counts(node: Node, diags: Diagnostics) -> list[int | None]:
+    c = node.props.get("count")
+    if c is None:
+        return [None]
+    if c.value < 1:
+        diags.error("bad-value", "count= must be at least 1", node.prop_spans["count"])
+        return []
+    return list(range(1, c.value + 1))
+
+
+@dataclass
+class _Ctx:
+    prefix: str = ""                       # "" or "IO:2."
+    board: Board | None = None
+    nets: dict[str, str] = field(default_factory=dict)   # local net name -> flattened name
+    aliases: dict[str, str] = field(default_factory=dict)  # port internal net -> parent flat net
+    stack: tuple = ()
+
+
+class _Builder:
+    def __init__(self, files: _Files, diags: Diagnostics, path: str):
+        self.files = files
+        self.diags = diags
+        self.d = Design("design", path)
+
+    def top(self, nodes: list[Node]) -> Design:
+        designs = [n for n in nodes if n.name == "design"]
+        if len(designs) != 1:
+            self.diags.error("design", "a design file needs exactly one 'design <name>' node",
+                             designs[1].span if len(designs) > 1 else None)
+        if designs and designs[0].args:
+            self.d.name = str(designs[0].args[0].value)
+        self.body(nodes, _Ctx(stack=(("", self.d.name),)))
+        return self.d
+
+    # -- nets and ports ---------------------------------------------------
+    def _net_ref(self, local: str | None, ctx: _Ctx, span: Span) -> str | None:
+        if local is None:
+            return None
+        flat = ctx.nets.get(local)
+        if flat is None:
+            self.diags.error("undefined-net", f"net '{local}' is not declared{_suggest(local, ctx.nets)}",
+                             span)
+        return flat
+
+    def body(self, nodes: list[Node], ctx: _Ctx) -> None:
+        d, diags = self.d, self.diags
+        ports = [n for n in nodes if n.name == "port"]
+        for n in nodes:
+            if n.name != "net":
                 continue
-            d.nets[name] = Net(name, n.span, _conv(n, "desc", schema.STR))
-        elif n.name == "chip":
-            ref = str(n.args[0].value)
+            base = str(n.args[0].value)
+            counts = _counts(n, diags)
+            if n.props.get("count") is not None and "{n}" not in base:
+                diags.error("template", f"net '{base}' has count= but no {{n}} in its name", n.span)
+                continue
+            for k in counts:
+                local = _tmpl(base, k, n.span, diags, "net name")
+                if local in ctx.nets:
+                    diags.error("duplicate-net", f"net '{local}' declared twice", n.span)
+                    continue
+                if local in ctx.aliases:
+                    ctx.nets[local] = ctx.aliases[local]
+                    continue
+                flat = ctx.prefix + local
+                ctx.nets[local] = flat
+                d.nets[flat] = Net(flat, n.span, _conv(n, "desc", schema.STR))
+        for pn in ports:
+            pname, internal = str(pn.args[0].value), _conv(pn, "net", schema.NAME)
+            if internal not in ctx.nets:
+                diags.error("undefined-net", f"port {pname}: net '{internal}' is not declared"
+                                             f"{_suggest(internal, ctx.nets)}", pn.span)
+            elif ctx.board is None:
+                d.nets[ctx.nets[internal]].port = pname
+            if ctx.board is not None:
+                ctx.board.port_dirs[pname] = _conv(pn, "dir", schema.STR, "bidir")
+
+        for n in nodes:
+            if n.name == "chip":
+                self.chip(n, ctx)
+            elif n.name == "board":
+                self.board(n, ctx)
+            elif n.name == "scenario":
+                self.scenario(n, ctx)
+            elif n.name == "rules":
+                if ctx.board is not None:
+                    diags.info("ignored-rules", "rules in an instantiated design are ignored; the top-level "
+                                                "design's rules apply", n.span)
+                    continue
+                for r in n.children:
+                    d.rules[r.name] = schema.convert(next(iter(r.props.values())), schema.RATIO)
+            elif n.name == "waive":
+                d.waivers.append(Waiver(str(n.args[0].value), ctx.prefix + str(n.args[1].value),
+                                        _conv(n, "reason", schema.STR), n.span))
+
+    # -- chips --------------------------------------------------------------
+    def chip(self, n: Node, ctx: _Ctx) -> None:
+        d, diags = self.d, self.diags
+        base = str(n.args[0].value)
+        if _BAD_REF_CHARS.search(base):
+            diags.error("bad-name", f"chip reference '{base}' may not contain . : {{ }}", n.span)
+            return
+        part_name = _conv(n, "part", schema.NAME)
+        part = None
+        if part_name is not None:
+            pdef = self.files.lookup(self.files.parts, part_name, "part", n.prop_spans["part"], required=False)
+            part = pdef.nodes[0] if pdef else None
+        fnodes = _chip_functions(n, part, diags)
+        for k in _counts(n, diags):
+            ref = ctx.prefix + (f"{base}:{k}" if k is not None else base)
             if ref in d.chips:
                 diags.error("duplicate-chip", f"chip '{ref}' defined twice (also at {d.chips[ref].span})",
                             n.span)
                 continue
-            chip = Chip(ref, n.span, _conv(n, "part", schema.NAME), _conv(n, "desc", schema.STR))
-            fnodes = _chip_functions(n, parts, diags)
+            chip = Chip(ref, n.span, part_name, _tmpl(_conv(n, "desc", schema.STR), k, n.span, diags, "desc"),
+                        board=ctx.board.path if ctx.board else "")
             if not fnodes:
                 diags.warning("empty-chip", f"chip {ref} has no power functions", n.span, ref)
             for fn in fnodes:
@@ -351,59 +522,116 @@ def _build(nodes: list[Node], path: str, parts: dict, diags: Diagnostics) -> Des
                                 f"chip {ref} has two functions named '{f.name}'; name them, "
                                 f"e.g. '{fn.name} {fn.name}2'", fn.span, ref)
                     continue
+                for p in f.ins + f.outs:
+                    p.net_local = _tmpl(p.net_local, k, p.span, diags, "net")
+                    p.net = self._net_ref(p.net_local, ctx, p.span)
+                    fr = _tmpl(p.from_ref, k, p.span, diags, "from")
+                    p.from_ref = ctx.prefix + fr if fr else None
                 chip.functions[f.name] = f
             d.chips[ref] = chip
-        elif n.name == "scenario":
-            name = str(n.args[0].value)
-            if name in d.scenarios:
-                diags.error("duplicate-scenario", f"scenario '{name}' defined twice", n.span)
+
+    # -- boards ---------------------------------------------------------------
+    def board(self, n: Node, ctx: _Ctx) -> None:
+        d, diags = self.d, self.diags
+        base = str(n.args[0].value)
+        if _BAD_REF_CHARS.search(base):
+            diags.error("bad-name", f"board reference '{base}' may not contain . : {{ }}", n.span)
+            return
+        dname = _conv(n, "design", schema.NAME)
+        ddef = self.files.lookup(self.files.designs, dname, "design", n.prop_spans["design"], required=True)
+        if ddef is None:
+            return
+        key = (ddef.ns, dname.split(":")[-1])
+        if key in ctx.stack or (key[1] == ctx.stack[0][1] and ddef.file == d.file):
+            chain = " -> ".join(k[1] for k in ctx.stack) + f" -> {key[1]}"
+            diags.error("board-cycle", f"design instantiates itself: {chain}", n.span)
+            return
+        child_ports = {str(p.args[0].value): p for p in ddef.nodes if p.name == "port" and p.args}
+        for k in _counts(n, diags):
+            path = ctx.prefix + (f"{base}:{k}" if k is not None else base)
+            if path in d.boards or path in d.chips:
+                diags.error("duplicate-board", f"'{path}' is defined twice", n.span)
                 continue
-            s = ScenarioDef(name, n.span, desc=_conv(n, "desc", schema.STR))
-            base = _conv(n, "base", schema.STR)
-            if base:
-                s.bases = [(b.strip(), n.prop_spans["base"]) for b in base.split(",") if b.strip()]
-            for c in n.children:
-                if c.name == "loads":
-                    s.loads = c.args[0].value
-                elif c.name == "set":
-                    s.sets.append((str(c.args[0].value), dict(c.props), dict(c.prop_spans), c.span))
-            d.scenarios[name] = s
-        elif n.name == "rules":
-            for r in n.children:
-                val = next(iter(r.props.values()))
-                d.rules[r.name] = schema.convert(val, schema.RATIO)
-        elif n.name == "waive":
-            d.waivers.append(Waiver(str(n.args[0].value), str(n.args[1].value),
-                                    _conv(n, "reason", schema.STR), n.span))
-    return d
+            b = Board(path, key[1], ddef.file, n.span,
+                      _tmpl(_conv(n, "desc", schema.STR), k, n.span, diags, "desc"))
+            aliases: dict[str, str] = {}
+            for bp in n.children_named("port"):
+                pname = str(bp.args[0].value)
+                if pname not in child_ports:
+                    diags.error("unknown-port", f"design '{key[1]}' has no port '{pname}'"
+                                                f"{_suggest(pname, child_ports)}; ports: "
+                                                f"{', '.join(child_ports) or 'none'}", bp.span)
+                    continue
+                if pname in b.ports:
+                    diags.error("duplicate-port", f"port '{pname}' bound twice", bp.span)
+                    continue
+                local = _tmpl(_conv(bp, "net", schema.NAME), k, bp.span, diags, "net")
+                flat = self._net_ref(local, ctx, bp.span)
+                if flat is None:
+                    continue
+                b.ports[pname] = flat
+                aliases[str(child_ports[pname].props["net"].value)] = flat
+            for pname in child_ports:
+                if pname not in b.ports and not any(str(bp.args[0].value) == pname
+                                                    for bp in n.children_named("port")):
+                    diags.error("unbound-port", f"board {path}: port '{pname}' of design '{key[1]}' "
+                                                f"is not connected", n.span)
+            d.boards[path] = b
+            self.body(ddef.nodes, _Ctx(path + ".", b, {}, aliases, ctx.stack + (key,)))
+
+    # -- scenarios --------------------------------------------------------------
+    def scenario(self, n: Node, ctx: _Ctx) -> None:
+        owner = ctx.board.path if ctx.board else ""
+        group = self.d.scenario_group(owner)
+        name = str(n.args[0].value)
+        if name in group:
+            self.diags.error("duplicate-scenario", f"scenario '{name}' defined twice", n.span)
+            return
+        s = ScenarioDef(name, n.span, owner, desc=_conv(n, "desc", schema.STR))
+        base = _conv(n, "base", schema.STR)
+        if base:
+            s.bases = [(b.strip(), n.prop_spans["base"]) for b in base.split(",") if b.strip()]
+        for c in n.children:
+            if c.name == "loads":
+                s.loads = c.args[0].value
+            elif c.name == "set":
+                s.raw_sets.append((ctx.prefix + str(c.args[0].value), dict(c.props), dict(c.prop_spans),
+                                   c.span))
+        group[name] = s
 
 
 # ---------------------------------------------------------------------------
 # Layer 3b: resolve references
 # ---------------------------------------------------------------------------
 def find_function(d: Design, path: str) -> tuple[Function | None, str]:
-    parts = path.split(".")
-    chip = d.chips.get(parts[0])
-    if chip is None:
-        return None, f"no chip '{parts[0]}'{_suggest(parts[0], d.chips)}"
-    if len(parts) == 1:
+    """Resolve CHIP or CHIP.function (CHIP may be hierarchical, e.g. IO:2.U3)."""
+    if path in d.chips:
+        chip, fname = d.chips[path], None
+    else:
+        head, _, fname = path.rpartition(".")
+        chip = d.chips.get(head)
+        if chip is None:
+            last = path.split(".")[-1]
+            scope = [c.rsplit(".", 1)[-1] for c in d.chips]
+            return None, f"no chip '{path}'{_suggest(last, scope)}"
+    if fname is None:
         if len(chip.functions) == 1:
             return next(iter(chip.functions.values())), ""
         return None, f"chip '{chip.ref}' has several functions ({', '.join(chip.functions)}); name one"
-    f = chip.functions.get(parts[1])
+    f = chip.functions.get(fname)
     if f is None:
-        return None, (f"chip '{chip.ref}' has no function '{parts[1]}'{_suggest(parts[1], chip.functions)}"
+        return None, (f"chip '{chip.ref}' has no function '{fname}'{_suggest(fname, chip.functions)}"
                       f"; it has: {', '.join(chip.functions)}")
     return f, ""
 
 
 def _resolve_out_port(d: Design, ref: str) -> tuple[Port | None, str]:
-    parts = ref.split(".")
-    if parts[-1] in ("out", "in"):
-        if parts[-1] == "in":
+    base, _, last = ref.rpartition(".")
+    if last in ("out", "in") and base:
+        if last == "in":
             return None, f"'{ref}' is an input; from= must name an output"
-        parts = parts[:-1]
-    f, msg = find_function(d, ".".join(parts))
+        ref = base
+    f, msg = find_function(d, ref)
     if f is None:
         return None, msg
     if not f.outs:
@@ -411,12 +639,104 @@ def _resolve_out_port(d: Design, ref: str) -> tuple[Port | None, str]:
     return f.outs[0], ""
 
 
+def _candidates(d: Design) -> dict[str, tuple[str, Any]]:
+    c: dict[str, tuple[str, Any]] = {}
+    for b in d.boards.values():
+        c[b.path] = ("board", b)
+    for ch in d.chips.values():
+        c[ch.ref] = ("chip", ch)
+    for f in d.functions():
+        c[f.path] = ("function", f)
+    return c
+
+
+def _resolve_set(d: Design, s: ScenarioDef, cands, diags: Diagnostics) -> None:
+    for pattern, props, spans, span in s.raw_sets:
+        matches = [k for k in cands if paths.match(pattern, k)]
+        if not matches:
+            last = pattern.split(".")[-1]
+            diags.error("bad-reference", f"set {pattern}: matches no board, chip or function"
+                                         f"{_suggest(last, [k.split('.')[-1] for k in cands])}", span)
+            continue
+        if not props:
+            diags.warning("empty-set", f"set {pattern} changes nothing", span)
+        op = SetOp(span)
+        reported: set[tuple[str, str]] = set()
+
+        def err(code, key, msg, sp):
+            if (code, key) not in reported:
+                reported.add((code, key))
+                diags.error(code, f"set {pattern}: {msg}", sp)
+
+        for m in matches:
+            kind, obj = cands[m]
+            if kind == "chip" and len(obj.functions) == 1:
+                kind, obj = "function", next(iter(obj.functions.values()))
+            if kind == "board":
+                allowed = SETTABLE["board"]
+            elif kind == "chip":
+                allowed = SETTABLE["*"]
+            else:
+                allowed = {**SETTABLE["*"], **SETTABLE.get(obj.kind, {})}
+            what = {"board": "a board", "chip": "a multi-function chip"}.get(kind, f"a {getattr(obj, 'kind', '')}")
+            vals: dict[str, Any] = {}
+            for k, v in props.items():
+                if k not in allowed:
+                    err("unknown-property", k, f"'{k}' cannot be set on {what}{_suggest(k, allowed)}; "
+                                               f"settable: {', '.join(allowed)}", spans[k])
+                    continue
+                try:
+                    vals[k] = schema.convert(v, allowed[k])
+                except ValueError as e:
+                    err("bad-value", k, f"'{k}' {e}", spans[k])
+            if kind == "board":
+                if "scenario" in vals:
+                    if vals["scenario"] not in obj.scenarios:
+                        err("undefined-scenario", obj.design,
+                            f"design '{obj.design}' has no scenario '{vals['scenario']}'"
+                            f"{_suggest(vals['scenario'], obj.scenarios)}", spans["scenario"])
+                    else:
+                        op.boards.append((obj.path, vals["scenario"]))
+                if "on" in vals:
+                    for f in d.functions():
+                        if f.path.startswith(obj.prefix):
+                            op.func_vals.setdefault(f.path, {})["on"] = vals["on"]
+            elif kind == "chip":
+                for f in obj.functions.values():
+                    op.func_vals.setdefault(f.path, {}).update(vals)
+            else:
+                if obj.kind == "consumer" and len([k for k in vals if k in ("i", "p", "r")]) > 1:
+                    err("load-model", "load", "give only one of i=, p=, r=", span)
+                op.func_vals.setdefault(obj.path, {}).update(vals)
+        s.ops.append(op)
+
+
+def _scenario_cycles(group: dict[str, ScenarioDef], diags: Diagnostics) -> None:
+    state: dict[str, int] = {}
+    reported: set[str] = set()
+
+    def visit(name: str, stack: list[str]) -> None:
+        state[name] = 1
+        for b, _ in group[name].bases:
+            if b not in group:
+                continue
+            if state.get(b) == 1:
+                cyc = stack[stack.index(b):] + [b]
+                if not reported & set(cyc):
+                    reported.update(cyc)
+                    diags.error("scenario-cycle", f"scenario inheritance loops: {' -> '.join(cyc)}",
+                                group[b].span)
+            elif b not in state:
+                visit(b, stack + [b])
+        state[name] = 2
+
+    for name in group:
+        if name not in state:
+            visit(name, [name])
+
+
 def _resolve(d: Design, diags: Diagnostics) -> None:
     ports = [p for f in d.functions() for p in f.ins + f.outs]
-    for p in ports:
-        if p.net is not None and p.net not in d.nets:
-            diags.error("undefined-net", f"net '{p.net}' is not declared{_suggest(p.net, d.nets)}",
-                        p.span, p.func.path)
     for p in ports:
         if p.from_ref is None:
             continue
@@ -433,83 +753,46 @@ def _resolve(d: Design, diags: Diagnostics) -> None:
             d.nets.setdefault(anon, Net(anon, target.span, anonymous=True))
         if p.net is not None and p.net != target.net:
             diags.error("conflicting-link",
-                        f"{p.path} has net={p.net} but from={p.from_ref} is on net {target.net}",
+                        f"{p.path} has net={p.net_local} but from={p.from_ref} is on net {target.net}",
                         p.span, p.func.path)
             continue
         p.net = target.net
 
-    for s in d.scenarios.values():
-        for b, span in s.bases:
-            if b not in d.scenarios:
-                diags.error("undefined-scenario",
-                            f"scenario '{s.name}' base '{b}' is not defined{_suggest(b, d.scenarios)}", span)
-        resolved = []
-        for path, props, spans, span in s.sets:
-            f, msg = find_function(d, path)
-            if f is None:
-                diags.error("bad-reference", f"set {path}: {msg}", span)
-                continue
-            allowed = {**SETTABLE["*"], **SETTABLE.get(f.kind, {})}
-            vals: dict[str, Any] = {}
-            for k, v in props.items():
-                if k not in allowed:
-                    diags.error("unknown-property",
-                                f"set {path}: '{k}' cannot be set on a {f.kind}{_suggest(k, allowed)}; "
-                                f"settable: {', '.join(allowed)}", spans[k])
-                    continue
-                try:
-                    vals[k] = schema.convert(v, allowed[k])
-                except ValueError as e:
-                    diags.error("bad-value", f"set {path}: '{k}' {e}", spans[k])
-            if f.kind == "consumer" and len([k for k in vals if k in ("i", "p", "r")]) > 1:
-                diags.error("load-model", f"set {path}: give only one of i=, p=, r=", span)
-            if not props:
-                diags.warning("empty-set", f"set {path} changes nothing", span)
-            resolved.append((f.path, vals, spans, span))
-        s.sets = resolved
-
-    # scenario inheritance loops
-    state: dict[str, int] = {}
-    reported: set[str] = set()
-
-    def visit(name: str, stack: list[str]) -> None:
-        state[name] = 1
-        for b, _ in d.scenarios[name].bases:
-            if b not in d.scenarios:
-                continue
-            if state.get(b) == 1:
-                cyc = stack[stack.index(b):] + [b]
-                if not reported & set(cyc):
-                    reported.update(cyc)
-                    diags.error("scenario-cycle", f"scenario inheritance loops: {' -> '.join(cyc)}",
-                                d.scenarios[b].span)
-            elif b not in state:
-                visit(b, stack + [b])
-        state[name] = 2
-
-    for name in d.scenarios:
-        if name not in state:
-            visit(name, [name])
+    cands = _candidates(d)
+    groups = [d.scenarios] + [b.scenarios for b in d.boards.values()]
+    for group in groups:
+        for s in group.values():
+            for b, span in s.bases:
+                if b not in group:
+                    diags.error("undefined-scenario",
+                                f"scenario '{s.name}' base '{b}' is not defined{_suggest(b, group)}", span)
+            _resolve_set(d, s, cands, diags)
+        _scenario_cycles(group, diags)
 
     for w in d.waivers:
-        f, _ = find_function(d, w.target)
-        if f is None and w.target not in d.chips and w.target not in d.nets:
-            diags.error("bad-reference", f"waive target '{w.target}' is not a chip, function or net", w.span)
+        if not any(paths.match_prefix(w.target, k) for k in list(cands) + list(d.nets)):
+            diags.error("bad-reference", f"waive target '{w.target}' matches no board, chip, function or net",
+                        w.span)
 
 
-def load(path: str) -> tuple[Design | None, Diagnostics]:
-    """Run layers 1-3 (and 4 via topology). Returns (design or None, diagnostics)."""
+def load(path: str, libs: list[str] | None = None) -> tuple[Design | None, Diagnostics]:
+    """Run layers 1-4. Returns (design or None, diagnostics)."""
     from .topology import check_topology
 
     diags = Diagnostics()
-    files = _Files(diags)
+    roots = library_roots(path, libs, diags)
+    files = _Files(diags, roots)
     nodes = files.read(path)
-    if nodes is None:
+    if nodes is None or diags.has_errors():
         return None, diags
-    files.collect(nodes, path, library=False)
+    files.collect(nodes, path, "", main=True)
     if diags.has_errors():
         return None, diags
-    d = _build(nodes, path, files.parts, diags)
+    d = _Builder(files, diags, path).top(nodes)
+    for lib in roots.values():
+        if lib.files:
+            stamp(lib)
+            d.libraries.append(lib)
     if diags.has_errors():
         return None, diags
     _resolve(d, diags)

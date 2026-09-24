@@ -30,6 +30,10 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("-s", "--scenario", help="scenario (default: first)")
     g.add_argument("-o", "--output", help="output .dot/.svg/.png/.pdf (default: stdout DOT)")
 
+    for sp in (c, r, g):
+        sp.add_argument("--lib", action="append", metavar="NAME=PATH",
+                        help="library root (overrides project file and $POWERTREE_LIBS)")
+
     sub.add_parser("schema", help="print the reference of all nodes and properties")
 
     a = ap.parse_args(argv)
@@ -38,12 +42,16 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     scen = a.scenario if a.cmd == "report" else ([a.scenario] if getattr(a, "scenario", None) else None)
-    an = analyze(a.file, scen)
+    an = analyze(a.file, scen, a.lib)
 
     if a.cmd == "report" and a.json:
         print(to_json(an))
         return 0 if an.ok else 1
 
+    if a.cmd == "check" and an.design is not None:
+        from .report import libraries_text
+        for line in libraries_text(an):
+            print(line)
     if a.cmd == "report" and an.design is not None:
         for res in an.results.values():
             print(scenario_text(an, res))

@@ -44,7 +44,12 @@ def test_reference_errors(tmp_path):
     """)
     msgs = [f.message for f in a.diags.errors]
     assert any("did you mean 'VBUS'" in m for m in msgs)
-    assert any("no chip 'P2'" in m for m in msgs)
+    a = run(tmp_path, """
+    net VBUS
+    chip P1 { provider { out net=VBUS v="5V" } }
+    chip L1 { consumer { in from=P2; load i="1mA" } }
+    """)
+    assert any("no chip 'P2'" in f.message for f in a.diags.errors)
 
 
 def test_semantic_requirements(tmp_path):

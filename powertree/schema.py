@@ -202,10 +202,22 @@ TOP = {
                    props={"desc": STR}),
     "use": Spec("Load part definitions from another file (path relative to this file).",
                 args=(1, 1, STR), arg_names="<path>"),
-    "net": Spec("Named bus.", args=(1, 1, NAME), arg_names="<NAME>", props={"desc": STR}),
-    "chip": Spec("A physical component instance; groups all of its power functions.",
-                 args=(1, 1, NAME), arg_names="<REF>", props={"part": NAME, "desc": STR},
+    "net": Spec("Named bus. With count=, the name must contain {n}: net \"IO{n}_24V\" count=8.",
+                args=(1, 1, NAME), arg_names="<NAME>", props={"desc": STR, "count": INT}),
+    "chip": Spec("A physical component instance; groups all of its power functions. "
+                 "count= makes instances REF:1..REF:count; {n} in net=/from=/desc= is the index.",
+                 args=(1, 1, NAME), arg_names="<REF>", props={"part": NAME, "desc": STR, "count": INT},
                  children=FUNCTIONS),
+    "port": Spec("Board interface: exposes an internal net to the design that instantiates this one.",
+                 args=(1, 1, NAME), arg_names="<PORT>",
+                 props={"net": NAME, "dir": Enum(("in", "out", "bidir")), "desc": STR},
+                 required=("net",)),
+    "board": Spec("Instance of another design (a board, module or subsystem). count= works as for chip.",
+                  args=(1, 1, NAME), arg_names="<REF>",
+                  props={"design": NAME, "count": INT, "desc": STR}, required=("design",),
+                  children={"port": Spec("Bind the board's port to a net of this design.",
+                                         args=(1, 1, NAME), arg_names="<PORT>", props={"net": NAME},
+                                         required=("net",))}),
     "part": Spec("Reusable component definition, instantiated by chip part=.",
                  args=(1, 1, NAME), arg_names="<PART>", props={"desc": STR}, children=FUNCTIONS),
     "scenario": Spec("Operating scenario; base= inherits (comma-separated, applied in order).",
@@ -213,11 +225,12 @@ TOP = {
                      children={"loads": Spec("Load level for all consumers.",
                                              args=(1, 1, Enum(("nom", "min", "max"))),
                                              arg_names="nom|min|max"),
-                               "set": Spec("Override a function's properties in this scenario.",
-                                           args=(1, 1, NAME), arg_names="<CHIP[.function]>",
+                               "set": Spec("Override properties in this scenario. Target: function, "
+                                           "chip, or board; selectors REF:3, REF:*, REF:1..4.",
+                                           args=(1, 1, NAME), arg_names="<target>",
                                            free_props=True)}),
     "rules": Spec("Design-rule thresholds.", children=RULES),
-    "waive": Spec("Accept a finding: waive <code> <target> reason=...",
+    "waive": Spec("Accept a finding: waive <code> <target> reason=... (target may use selectors).",
                   args=(2, 2, NAME), arg_names="<code> <target>", props={"reason": STR},
                   required=("reason",)),
 }
@@ -296,3 +309,9 @@ def schema_reference() -> str:
 
     walk(TOP, 0)
     return "\n".join(lines)
+
+
+PROJECT = {
+    "library": Spec("Named library root: use \"<name>:file.kdl\", part=<name>:PART.",
+                    args=(1, 1, NAME), arg_names="<name>", props={"path": STR}, required=("path",)),
+}

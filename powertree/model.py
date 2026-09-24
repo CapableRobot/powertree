@@ -14,7 +14,8 @@ class Port:
     direction: str                 # "in" | "out"
     func: "Function"
     index: int = 0
-    net: str | None = None
+    net: str | None = None         # flattened net name
+    net_local: str | None = None   # net name as written in its file
     from_ref: str | None = None
     span: Span | None = None
     # electrical properties (already converted)
@@ -90,11 +91,12 @@ class Function:
 
 @dataclass
 class Chip:
-    ref: str
+    ref: str                       # flattened: "IO:2.D1:3"
     span: Span
     part: str | None = None
     desc: str | None = None
     functions: dict[str, Function] = field(default_factory=dict)
+    board: str = ""                # path of the enclosing board instance, "" at top level
 
 
 @dataclass
@@ -103,18 +105,54 @@ class Net:
     span: Span | None = None
     desc: str | None = None
     anonymous: bool = False
+    port: str | None = None        # unbound top-level port name (board analysed standalone)
     drivers: list[Port] = field(default_factory=list)
     sinks: list[Port] = field(default_factory=list)
+
+
+@dataclass
+class SetOp:
+    span: Span
+    func_vals: dict[str, dict[str, Any]] = field(default_factory=dict)   # function path -> values
+    boards: list[tuple[str, str]] = field(default_factory=list)          # (board path, scenario)
 
 
 @dataclass
 class ScenarioDef:
     name: str
     span: Span
+    owner: str = ""                # board path owning this scenario, "" = top level
     bases: list[tuple[str, Span]] = field(default_factory=list)
     loads: str | None = None
-    sets: list[tuple[str, dict[str, Any], dict[str, Span], Span]] = field(default_factory=list)
+    raw_sets: list[tuple[str, dict[str, Any], dict[str, Span], Span]] = field(default_factory=list)
+    ops: list[SetOp] = field(default_factory=list)
     desc: str | None = None
+
+
+@dataclass
+class Board:
+    path: str                      # "IO:3" or "SYS.IO:3"
+    design: str
+    file: str
+    span: Span
+    desc: str | None = None
+    ports: dict[str, str] = field(default_factory=dict)       # port name -> parent net (flattened)
+    port_dirs: dict[str, str] = field(default_factory=dict)
+    scenarios: dict[str, ScenarioDef] = field(default_factory=dict)
+
+    @property
+    def prefix(self) -> str:
+        return self.path + "."
+
+
+@dataclass
+class Library:
+    name: str
+    path: str
+    origin: str                    # project file / --lib / environment
+    files: list[str] = field(default_factory=list)
+    sha: str | None = None
+    git: str | None = None
 
 
 @dataclass
@@ -139,8 +177,13 @@ class Design:
     scenarios: dict[str, ScenarioDef] = field(default_factory=dict)
     rules: dict[str, float] = field(default_factory=lambda: dict(DEFAULT_RULES))
     waivers: list[Waiver] = field(default_factory=list)
+    boards: dict[str, Board] = field(default_factory=dict)
+    libraries: list[Library] = field(default_factory=list)
     topo_order: list[Function] = field(default_factory=list)
 
     def functions(self):
         for c in self.chips.values():
             yield from c.functions.values()
+
+    def scenario_group(self, owner: str) -> dict[str, ScenarioDef]:
+        return self.scenarios if owner == "" else self.boards[owner].scenarios

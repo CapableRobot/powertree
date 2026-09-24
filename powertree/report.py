@@ -7,6 +7,7 @@ import os
 from .analysis import Analysis
 from .diagnostics import Diagnostics
 from .solver import Result
+from .paths import group_key
 from .units import AMP, VOLT, WATT, fmt, pct
 
 
@@ -37,6 +38,14 @@ def _loc(span) -> str:
     return f"{f}:{span.line}:{span.col}"
 
 
+def libraries_text(a: Analysis) -> list[str]:
+    out = []
+    for lib in a.design.libraries:
+        git = f"git {lib.git}" if lib.git else "not a git checkout"
+        out.append(f"Library {lib.name}: {lib.path} ({git}, content {lib.sha}; from {lib.origin})")
+    return out
+
+
 def _board_power(r: Result, d, b) -> float:
     nets = set(b.ports.values())
     p = 0.0
@@ -56,7 +65,9 @@ def _board_power(r: Result, d, b) -> float:
 def scenario_text(a: Analysis, r: Result) -> str:
     d = a.design
     out = [f"=== {d.name} — scenario '{r.scenario}' (loads {r.loads}) "
-           f"— {'converged' if r.converged else 'NOT converged'} in {r.iterations} iterations", ""]
+           f"— {'converged' if r.converged else 'NOT converged'} in {r.iterations} iterations"]
+    out += libraries_text(a)
+    out.append("")
 
     rows = []
     for n in d.nets.values():
@@ -94,6 +105,36 @@ def scenario_text(a: Analysis, r: Result) -> str:
         rows.append([ref, chip.part or "", chip.desc or "", fmt(r.chip_heat[ref], WATT),
                      fmt(power_in([chip]), WATT) if sinks else "—"])
     out += _table(["Chip", "Part", "Desc", "Heat", "Power in"], rows, {3, 4}) + [""]
+
+    if d.boards:
+        rows = []
+        for b in d.boards.values():
+            heat = sum(h for ref, h in r.chip_heat.items() if ref.startswith(b.prefix))
+            rows.append([b.path, b.design, r.board_scenarios.get(b.path, "(default)"),
+                         fmt(heat, WATT), fmt(_board_power(r, d, b), WATT)])
+        out += _table(["Board", "Design", "Scenario", "Heat", "Power in"], rows, {3, 4}) + [""]
+
+    groups: dict[str, list] = {}
+    for ref in d.chips:
+        k = group_key(ref)
+        if k != ref:
+            groups.setdefault(k, []).append(ref)
+    board_groups: dict[str, list] = {}
+    for bp in d.boards:
+        k = group_key(bp)
+        if k != bp:
+            board_groups.setdefault(k, []).append(bp)
+    if groups or board_groups:
+        rows = []
+        for k, refs in board_groups.items():
+            heat = sum(h for ref, h in r.chip_heat.items() if any(ref.startswith(b + ".") for b in refs))
+            pin = sum(_board_power(r, d, d.boards[b]) for b in refs)
+            rows.append([k, "board", str(len(refs)), fmt(heat, WATT), fmt(pin, WATT)])
+        for k, refs in groups.items():
+            chips = [d.chips[x] for x in refs]
+            rows.append([k, "chip", str(len(refs)), fmt(sum(r.chip_heat[x] for x in refs), WATT),
+                         fmt(power_in(chips), WATT)])
+        out += _table(["Group", "Type", "Count", "Heat", "Power in"], rows, {2, 3, 4}) + [""]
 
     src = r.source_power
 
@@ -157,8 +198,11 @@ def to_json(a: Analysis) -> str:
                        "offboard_power": r.offboard_power, "board_heat": r.board_heat,
                        "system_efficiency": r.system_efficiency},
         }
-
-    return json.dumps({"design": a.design.name if a.design else None,
+    libs = [{"name": l.name, "path": l.path, "origin": l.origin, "git": l.git, "sha": l.sha}
+            for l in (a.design.libraries if a.design else [])]
+    boards = {b.path: {"design": b.design, "file": b.file, "ports": b.ports}
+              for b in (a.design.boards.values() if a.design else [])}
+    return json.dumps({"design": a.design.name if a.design else None, "libraries": libs, "boards": boards,
                        "results": {k: res(v) for k, v in a.results.items()},
                        "findings": [f.to_dict() for f in a.diags.sorted()]}, indent=2)
 
@@ -184,11 +228,12 @@ def to_dot(a: Analysis, scenario: str) -> str:
          f"  label={_q(title)}; labelloc=t; fontname=Helvetica;",
          '  node [fontname=Helvetica, fontsize=10, shape=box, style="rounded,filled"];',
          "  edge [fontname=Helvetica, fontsize=9, color=gray40];"]
-    for ref, chip in d.chips.items():
-        title = f"{ref}" + (f"  {chip.part}" if chip.part else "") + (f"\n{chip.desc}" if chip.desc else "")
+    def chip_cluster(ref, chip, pad):
+        short = ref[len(chip.board) + 1:] if chip.board else ref
+        title = f"{short}" + (f"  {chip.part}" if chip.part else "") + (f"\n{chip.desc}" if chip.desc else "")
         title += f"\nheat {fmt(r.chip_heat[ref], WATT)}"
-        L.append(f"  subgraph {_q('cluster_' + ref)} {{")
-        L.append(f"    label={_q(title)}; style=rounded; color=gray60; fontsize=10;")
+        L.append(f"{pad}subgraph {_q('cluster_' + ref)} {{")
+        L.append(f"{pad}  label={_q(title)}; style=rounded; color=gray60; fontsize=10;")
         for f in chip.functions.values():
             fr = r.funcs[f.path]
             kind = f.kind + (f"/{f.subkind}" if f.subkind else "")
@@ -212,15 +257,50 @@ def to_dot(a: Analysis, scenario: str) -> str:
             fill = _FILL[f.kind] if fr.powered else "#f3f3f3"
             color = "red" if f.path in bad else ("darkorange" if f.path in warn else "gray30")
             pen = 2.5 if color != "gray30" else 1
-            L.append(f"    {_q(f.path)} [label={_q(chr(10).join(lines))}, fillcolor={_q(fill)}, "
+            L.append(f"{pad}  {_q(f.path)} [label={_q(chr(10).join(lines))}, fillcolor={_q(fill)}, "
                      f"color={color}, penwidth={pen}];")
-        L.append("  }")
-    for n in d.nets.values():
+        L.append(f"{pad}}}")
+
+    def net_owner(name: str) -> str:
+        bare = name.lstrip("~")
+        owners = [bp for bp in d.boards if bare.startswith(bp + ".")]
+        return max(owners, key=len) if owners else ""
+
+    def net_node(n, pad):
         nr = r.nets[n.name]
-        label = ("(direct)" if n.anonymous else n.name) + f"\n{_v(nr.v)}\n{fmt(nr.i, AMP)}"
+        owner = net_owner(n.name)
+        short = n.name.lstrip("~")[len(owner) + 1:] if owner else n.name
+        label = ("(direct)" if n.anonymous else short) + f"\n{_v(nr.v)}\n{fmt(nr.i, AMP)}"
         color = "red" if n.name in bad else "gray30"
-        L.append(f"  {_q('net:' + n.name)} [shape=ellipse, style=filled, fillcolor={_q('#ffffff' if nr.powered else '#f3f3f3')}, "
+        fill = "#ffffff" if nr.powered else "#f3f3f3"
+        L.append(f"{pad}{_q('net:' + n.name)} [shape=ellipse, style=filled, fillcolor={_q(fill)}, "
                  f"color={color}, label={_q(label)}];")
+
+    def board_cluster(path, pad):
+        if path:
+            b = d.boards[path]
+            heat = sum(h for ref, h in r.chip_heat.items() if ref.startswith(b.prefix))
+            scen = r.board_scenarios.get(path)
+            title = f"{path}  ({b.design})" + (f"  scenario {scen}" if scen else "") + f"\nheat {fmt(heat, WATT)}"
+            L.append(f"{pad}subgraph {_q('cluster_board_' + path)} {{")
+            L.append(f"{pad}  label={_q(title)}; style=\"rounded,dashed\"; color=steelblue; fontsize=11;")
+            inner = pad + "  "
+        else:
+            inner = pad
+        for bp, b in d.boards.items():
+            if bp.rpartition(".")[0] == path and bp != path:
+                board_cluster(bp, inner)
+        for ref, chip in d.chips.items():
+            if chip.board == path:
+                chip_cluster(ref, chip, inner)
+        for n in d.nets.values():
+            if net_owner(n.name) == path:
+                net_node(n, inner)
+        if path:
+            L.append(f"{pad}}}")
+
+    board_cluster("", "  ")
+    for n in d.nets.values():
         for p in n.drivers:
             i = r.funcs[p.func.path].iout
             L.append(f"  {_q(p.func.path)} -> {_q('net:' + n.name)} [label={_q(fmt(i, AMP))}];")

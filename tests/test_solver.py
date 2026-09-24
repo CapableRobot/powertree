@@ -235,6 +235,6 @@ def test_examples_are_clean():
     import os
     from powertree.analysis import analyze
     ex = os.path.join(os.path.dirname(__file__), "..", "examples")
-    for name in ("sensor-board.kdl", "ups.kdl"):
+    for name in ("sensor-board.kdl", "ups.kdl", "rack/rack.kdl"):
         a = analyze(os.path.join(ex, name))
         assert a.ok and not [f for f in a.diags.items if f.severity != "info" and not f.waived], name

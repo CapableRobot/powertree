@@ -74,6 +74,9 @@ class Result:
     converged: bool
     iterations: int
     diags: Diagnostics = field(default_factory=Diagnostics)
+    losses: dict[str, float] = field(default_factory=dict)      # heat by function kind (non-consumer)
+    port_i: dict[str, float] = field(default_factory=dict)      # input port path -> current
+    board_scenarios: dict[str, str] = field(default_factory=dict)
 
     @property
     def system_efficiency(self) -> float | None:
@@ -178,7 +181,7 @@ class _Solver:
             if m in o:
                 return m, o[m], f.load.offboard if f.load else False
         ld = f.load
-        val = {"nom": ld.nom, "min": ld.min, "max": ld.max}[self.eff.loads]
+        val = {"nom": ld.nom, "min": ld.min, "max": ld.max}[self.eff.load_level(f.path)]
         return ld.model, val, ld.offboard
 
     def dropout(self, f: Function, i: float) -> float:
@@ -414,8 +417,14 @@ def solve(d: Design, eff: Effective) -> Result:
                                  st.v if st else None, st.lo if st else None, st.hi if st else None,
                                  sum(s.i_in[id(p)] for p in n.sinks))
 
+    losses: dict[str, float] = {}
+    for fr in funcs.values():
+        if fr.func.kind != "consumer":
+            losses[fr.func.kind] = losses.get(fr.func.kind, 0.0) + fr.heat
     res = Result(sc, eff.loads, funcs, nets, chip_heat, source_power, load_power, offboard,
-                 sum(chip_heat.values()), converged, iters, diags)
+                 sum(chip_heat.values()), converged, iters, diags, losses,
+                 {p.path: s.i_in[id(p)] for f in d.functions() for p in f.ins},
+                 dict(eff.board_scenarios))
     _checks(d, s, res)
     return res
 

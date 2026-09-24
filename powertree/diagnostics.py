@@ -64,7 +64,7 @@ class Diagnostics:
     def sorted(self) -> list[Finding]:
         def key(f: Finding):
             s = f.span
-            return (SEVERITY_ORDER[f.severity], bool(f.waived),
+            return (bool(f.waived), SEVERITY_ORDER[f.severity],
                     s.file if s else "", s.line if s else 0, s.col if s else 0,
                     f.scenario or "", f.message)
         return sorted(self.items, key=key)

@@ -1,4 +1,4 @@
-# powertree file format — v0.1
+# powertree file format — v0.2
 
 A power design is a KDL v2 document. `powertree schema` prints the full list of nodes and properties generated from the validator, so it is always current; this document explains the meaning.
 
@@ -17,14 +17,18 @@ All electrical values are quoted strings with units: `"3.3V"`, `"250mA"`, `"45m�
 
 ```kdl
 design <name> [desc=]          // exactly one per design file
-use "<path>"                   // load part definitions; path relative to this file
-net <NAME> [desc=]             // named bus; every net= must refer to a declared net
+use "<path>" | "<lib>:<path>"  // load parts and designs; path relative to this file or a library root
+net <NAME> [desc=] [count=]    // named bus; every net= must refer to a declared net
+port <PORT> net=<NET> [dir=in|out|bidir]    // this design's interface when used as a board
 part <PART> { functions... }   // reusable definition (any file)
-chip <REF> [part=] [desc=] { functions... }
+chip <REF> [part=] [desc=] [count=] { functions... }
+board <REF> design=<name> [count=] [desc=] { port <PORT> net=<NET> ... }
 scenario <name> [base="a, b"] [desc=] { loads nom|min|max; set <target> prop=value... }
 rules { converter-load max=; provider-load max=; switch-load max=; input-headroom min= }
 waive <code> <target> reason="..."
 ```
+
+References (`CHIP`, `BOARD`) may not contain `.`, `:`, `{` or `}`; those characters are reserved for paths and templates.
 
 ## Chips and functions
 
@@ -94,6 +98,82 @@ A missing min or max falls back to the nominal value.
 
 If `part=` names no loaded part, it is metadata only, and the chip body must be complete. Defining the same part name twice is an error.
 
+## Counts and templates
+
+`count=N` on a `chip`, `board` or `net` creates N instances. Chips and boards are named `REF:1` … `REF:N`. Inside a counted node, `{n}` in `net=`, `from=` and `desc=` is replaced by the instance number. A counted net needs `{n}` in its name. Values containing `{n}` must be quoted, because braces are not allowed in bare KDL strings:
+
+```kdl
+net "IO{n}_24V" count=8
+chip F count=8 desc="Slot {n} fuse" { series { in net=BUS; out net="IO{n}_24V"; r "40mΩ" } }
+chip D count=12 { consumer led { in net=V5; load i="5mA" } }     // D:1 .. D:12, all on V5
+```
+
+## Hierarchy: ports and boards
+
+Any design file can be instantiated as a board. It declares its interface with `port` nodes, each naming one of its own nets:
+
+```kdl
+// io-card.kdl
+design io-card
+port VIN net=VIN_24V dir=in
+net VIN_24V
+...
+scenario run
+scenario idle { loads min; set K:* on=#false }
+```
+
+The parent `use`s the file and instantiates it, binding every port to one of its own nets. An unbound port is an error.
+
+```kdl
+use "io-card.kdl"
+board IO count=8 design=io-card { port VIN net="IO{n}_24V" }
+```
+
+**How a board is flattened into the parent:**
+- Chips are prefixed with the instance path, so U3 on the second card becomes `IO:2.U3` and its function becomes `IO:2.U3.buck`.
+- Internal nets are prefixed too (`IO:2.V5`), except port nets, which become the parent's net.
+- Boards nest to any depth. A design that instantiates itself, directly or indirectly, is an error.
+- The board's `waive` nodes come along, prefixed with the instance path.
+- The board's `rules` are ignored; the top-level design's rules apply.
+- The board's scenarios are available to the parent through `set <board> scenario=<name>`.
+
+A design analysed on its own reports its port nets as undriven, with a hint to analyse it from its parent.
+
+`dir=` is informational in this version.
+
+## Paths and selectors
+
+A path is dot-separated: `BOARD.CHIP.function`, for example `SHELF.IO:3.U10.vdd`. A segment of a path can select several instances:
+
+| Selector | Matches |
+|---|---|
+| `REF:3` | instance 3 |
+| `REF:*` | all instances |
+| `REF:2..5` | instances 2 to 5 |
+
+Selectors work in `set` and `waive` targets, e.g. `set IO:*.D:* on=#false` or `waive overload IO:1..4.U3 reason=...`.
+
+## Library roots
+
+Named roots let design files refer to shared libraries without machine-specific paths. They are set in `powertree-project.kdl`, found by searching upward from the design file:
+
+```kdl
+library corp path="../corp-power-lib"      // relative to the project file
+```
+
+Each later source overrides earlier ones:
+1. the project file
+2. `$POWERTREE_LIBS` (`name=path` entries separated by `:` on Linux/macOS, `;` on Windows)
+3. `--lib name=path` on the command line
+
+**Using a root:**
+- `use "corp:regulators.kdl"` loads a file from the root.
+- Relative `use` paths inside a library file stay in that library.
+- Parts and designs are namespaced by library. `part=corp:TPS54331` is always exact.
+- An unqualified `part=TPS54331` must be unique across all loaded files; otherwise it is an `ambiguous-part` error. The same rule applies to `design=`.
+
+**Traceability:** every report records each root used, with its path, its origin, a SHA-256 content hash of the files actually loaded, and the git commit (marked `+dirty` if there are uncommitted changes).
+
 ## Scenarios
 
 ```kdl
@@ -115,6 +195,10 @@ scenario night base="active, low-power" {
 - consumer: `i`, `p`, `r` (overrides the load level for that consumer)
 - provider: `v`, `imax`
 - converter: `v`
+- chip with several functions: `on` only, applied to all its functions
+- board: `scenario=<name>`, which applies the board's own scenario scoped to that board, and `on`, which turns off everything on the board
+
+**Load levels are scoped.** A board scenario's `loads` applies only inside that board. Otherwise `loads` lines apply in order, and the last one covering a function wins. So in `scenario s { loads max; set IO:2 scenario=idle }`, board IO:2 runs at its idle level and everything else at max.
 
 If no scenario is defined, a single implicit `nominal` scenario runs.
 
@@ -127,7 +211,7 @@ If no scenario is defined, a single implicit `nominal` scenario runs.
 | `switch-load max=` | 80% | same, for switch, series and oring |
 | `input-headroom min=` | 0 (off) | warning when the supplied range is within this fraction of an input's accepted limits |
 
-`waive <code> <target> reason=` accepts matching findings. The target may be a chip, a function or a net; a chip target covers all its functions. Waived findings are still listed, marked as waived. A waiver that matches nothing produces an `unused-waiver` warning.
+`waive <code> <target> reason=` accepts matching findings. The target may be a board, chip, function or net, or a selector; it covers everything beneath it. Waived findings are still listed, marked as waived. A waiver that matches nothing produces an `unused-waiver` warning.
 
 ## Pipeline and finding codes
 
@@ -136,7 +220,8 @@ Each layer runs only if the previous layers produced no errors, and reports all 
 1. **Syntax:** `syntax`
 2. **Structure:** `unknown-node`, `unknown-property`, `bad-value`, `argument-count`, `missing-property`, `unexpected-children`, `duplicate-property`
 3. **Model and references:**
-   - Loading: `file-not-found`, `duplicate-part`, `kind-mismatch`
+   - Loading: `file-not-found`, `library`, `duplicate-part`, `duplicate-design`, `ambiguous-part`, `ambiguous-design`, `unknown-design`, `kind-mismatch`, and the warning `unknown-part` for a near-miss part name
+   - Hierarchy: `bad-name`, `template`, `unknown-port`, `unbound-port`, `duplicate-port`, `duplicate-board`, `board-cycle`, and info `ignored-rules`
    - Function definitions: `port-count`, `missing-voltage`, `missing-efficiency`, `missing-load`, `load-model`, `efficiency`, `setpoint-range`
    - Duplicates: `duplicate-net`, `duplicate-chip`, `duplicate-function`, `duplicate-scenario`
    - References: `undefined-net`, `bad-reference`, `conflicting-link`, `undefined-scenario`, `scenario-cycle`
@@ -163,6 +248,20 @@ The solver computes a steady-state DC solution per scenario:
 
 Currents are nominal. Voltage ranges are propagated using those currents.
 
+## Report power summary
+
+| Row | Definition |
+|---|---|
+| Source output | Σ provider output power: V_out · I_out, after the provider's internal resistance |
+| Converter / Switch / Series / OR-ing loss | Σ (P_in − P_out) over functions of that kind |
+| On-board consumers | Σ P_in of consumers without `offboard` |
+| External consumers | Σ P_in of consumers with `offboard=#true` |
+| Source internal loss | Σ I²·r inside providers; heat, but not part of source output |
+| Heat on board | all losses + on-board consumers + source internal loss |
+| System efficiency | (on-board + external consumers) / source output |
+
+The rows from Converter loss through External consumers sum to Source output.
+
 **Heat per chip** is the sum of its functions' heat:
 - consumer: input power, unless `offboard`
 - converter, switch, series, oring: P_in − P_out
@@ -170,10 +269,8 @@ Currents are nominal. Voltage ranges are propagated using those currents.
 
 ## Not yet implemented (planned)
 
-- `count=` and `{n}` net templates
-- hierarchical `board` instances and ports
-- named library roots (`corp:regulators.kdl`)
 - KiCad netlist mode
+- `offboard` for series elements, so cable losses are not counted as board heat
 - worst-case current solve
 - battery state-of-charge and runtime
 - time-based behavior

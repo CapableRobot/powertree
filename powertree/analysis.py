@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from . import paths
 from .diagnostics import Diagnostics
 from .loader import load
 from .model import Design
@@ -21,8 +22,8 @@ class Analysis:
         return self.design is not None and not self.diags.has_errors()
 
 
-def analyze(path: str, scenarios: list[str] | None = None) -> Analysis:
-    d, diags = load(path)
+def analyze(path: str, scenarios: list[str] | None = None, libs: list[str] | None = None) -> Analysis:
+    d, diags = load(path, libs)
     a = Analysis(d, diags)
     if d is None:
         return a
@@ -43,7 +44,7 @@ def _apply_waivers(d: Design, diags: Diagnostics, check_unused: bool) -> None:
         if f.target is None or f.waived:
             continue
         for w in d.waivers:
-            if w.code == f.code and (f.target == w.target or f.target.startswith(w.target + ".")):
+            if w.code == f.code and paths.match_prefix(w.target, f.target):
                 f.waived = w.reason
                 w.used = True
                 break
