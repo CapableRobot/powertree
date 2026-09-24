@@ -22,6 +22,7 @@ class Port:
     v: VSpec | None = None         # out: setpoint; consumer in: required voltage
     accept: tuple[float, float] | None = None   # in: accepted input range
     adjust: tuple[float, float] | None = None   # converter out: setpoint range
+    vlim: Expr | None = None       # converter out: highest reachable output (vin, iout)
     imax: float | None = None
     share: bool = False
     priority: int | None = None

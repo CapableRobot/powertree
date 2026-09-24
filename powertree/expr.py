@@ -14,6 +14,7 @@ import math
 from .units import AMP, LITERAL_RE, NONE, PREFIXES, UNITS, VOLT, Q, UnitError
 
 VARIABLES = {"vin": VOLT, "vout": VOLT, "iout": AMP}
+LIMIT_VARIABLES = {"vin": VOLT, "iout": AMP}   # output-limit expressions cannot use vout
 RESERVED = {"t", "temp"}
 
 
@@ -49,7 +50,8 @@ FUNCTIONS = {
 def _same_dims(args) -> None:
     dims = {a.dim for a in args}
     if len(dims) > 1:
-        raise UnitError("arguments have different units")
+        raise UnitError("arguments have different units (a bare number is dimensionless; "
+                        "give it a unit, e.g. 0.8V)")
     return None
 
 
@@ -60,8 +62,9 @@ def _sqrt_dim(x: Q) -> Q:
 
 
 class Expr:
-    def __init__(self, source: str):
+    def __init__(self, source: str, variables: dict | None = None):
         self.source = source
+        self.variables = VARIABLES if variables is None else variables
         self._literals: dict[str, Q] = {}
 
         def repl(m):
@@ -94,9 +97,9 @@ class Expr:
             n = node.id
             if n in RESERVED:
                 raise ExprError(f"'{n}' is reserved for future use")
-            if n not in VARIABLES and n not in self._literals:
+            if n not in self.variables and n not in self._literals:
                 raise ExprError(f"unknown name '{n}' in {self.source!r} "
-                                f"(variables: {', '.join(VARIABLES)})")
+                                f"(variables here: {', '.join(self.variables)})")
         elif isinstance(node, ast.Call):
             if not isinstance(node.func, ast.Name) or node.func.id not in FUNCTIONS:
                 raise ExprError(f"unknown function in {self.source!r} "
@@ -144,6 +147,12 @@ class Expr:
             args = [self._eval(a, env) for a in node.args]
             return FUNCTIONS[node.func.id](*args)
         raise ExprError("internal: unexpected node")  # pragma: no cover
+
+    def validate_voltage(self) -> None:
+        """For output-limit expressions: variables vin, iout; result must be a voltage."""
+        r = self.eval(vin=Q(12.0, VOLT), iout=Q(0.5, AMP))
+        if r.dim != VOLT:
+            raise ExprError(f"expression {self.source!r} must give a voltage")
 
     def validate_efficiency(self) -> None:
         """Evaluate at a sample point to catch unit errors at load time."""

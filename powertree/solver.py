@@ -184,6 +184,17 @@ class _Solver:
         val = {"nom": ld.nom, "min": ld.min, "max": ld.max}[self.eff.load_level(f.path)]
         return ld.model, val, ld.offboard
 
+    def vcap(self, f: Function, vin: float, i: float) -> float:
+        """Highest output the converter can produce at this input (vlim=), or inf."""
+        lim = f.outs[0].vlim
+        if lim is None:
+            return math.inf
+        try:
+            return lim.eval(vin=Q(vin, VOLT), iout=Q(i, AMP)).value
+        except ExprError as ex:
+            self.errors.append(("vlim", f"{f.path}: {ex}", f))
+            return math.inf
+
     def dropout(self, f: Function, i: float) -> float:
         if f.dropout is None:
             return 0.0
@@ -223,12 +234,13 @@ class _Solver:
                     src = self.net(f.ins[0].net)
                     if src is not None:
                         vs = self.vset(f)
-                        if f.is_linear:
-                            vdo = self.dropout(f, i)
-                            st = NetState(min(vs.nom, src.v - vdo), min(vs.lo, src.lo - vdo),
-                                          min(vs.hi, src.hi - vdo))
-                        else:
-                            st = NetState(vs.nom, vs.lo, vs.hi)
+                        vdo = self.dropout(f, i) if f.is_linear else 0.0
+                        st = NetState(min(vs.nom, src.v - vdo if f.is_linear else math.inf,
+                                          self.vcap(f, src.v, i)),
+                                      min(vs.lo, src.lo - vdo if f.is_linear else math.inf,
+                                          self.vcap(f, src.lo, i)),
+                                      min(vs.hi, src.hi - vdo if f.is_linear else math.inf,
+                                          self.vcap(f, src.hi, i)))
                 elif f.kind in ("switch", "series"):
                     src = self.net(f.ins[0].net)
                     if src is not None:
@@ -480,6 +492,21 @@ def _checks(d: Design, s: _Solver, res: Result) -> None:
                     diags.warning("dropout-margin", f"{f.path} enters dropout at minimum input "
                                                     f"{fmt(src.lo, VOLT)} (dropout {fmt(vdo, VOLT)})",
                                   f.span, f.path, sc)
+            elif f.outs[0].vlim is not None:
+                src = s.net(f.ins[0].net)
+                lim = f.outs[0].vlim.source
+                cap = s.vcap(f, r.vin, r.iout)
+                if cap < vs.nom - 1e-12:
+                    diags.error("output-limited",
+                                f"{f.path} cannot reach its {fmt(vs.nom, VOLT)} setpoint: at vin {fmt(r.vin, VOLT)} "
+                                f"the output is limited to {fmt(cap, VOLT)} (vlim {lim})", f.outs[0].span, f.path, sc)
+                else:
+                    cap_lo = s.vcap(f, src.lo, r.iout)
+                    if cap_lo < vs.nom - 1e-12:
+                        diags.warning("output-limit-margin",
+                                      f"{f.path} falls out of regulation at minimum input {fmt(src.lo, VOLT)}: "
+                                      f"output limited to {fmt(cap_lo, VOLT)} (vlim {lim})",
+                                      f.outs[0].span, f.path, sc)
             elif f.subkind == "buck" and r.vin <= vs.nom:
                 diags.error("converter-kind", f"{f.path} is a buck but vin {fmt(r.vin, VOLT)} <= vout "
                                               f"{fmt(vs.nom, VOLT)}", f.span, f.path, sc)

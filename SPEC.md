@@ -53,6 +53,23 @@ Converter kinds: `buck boost buck-boost flyback isolated charge-pump charger lin
 
 `range="a..b"` on an input, optionally overridden by `vmin=`/`vmax=`. On a consumer, `v="3.3V ±5%"` also defines the accepted range. A `v=` with no tolerance and no `range=` is documentation only and is not checked.
 
+### Output limit (`vlim`)
+
+`vlim=` on a converter output gives the highest voltage the converter can produce, as an expression of `vin` and `iout`. Use it for datasheet limits such as "Output Voltage: 0.8V to 0.85 × VIN", a maximum duty cycle, or a pass-element drop:
+
+```kdl
+out net=V12 v="12V ±2%" vlim="0.85*vin"
+out net=V5  v="5V"      vlim="vin - 0.2Ω*iout"
+```
+
+The output is the lower of the setpoint and the limit, both for the nominal value and for the min/max range. It is usually a part property, so it belongs in the library definition.
+
+Two findings report the limit:
+- `output-limited` (error): the converter cannot reach its setpoint at the nominal input.
+- `output-limit-margin` (warning): it regulates at nominal input but not at the minimum input.
+
+The result must be a voltage, so every constant needs a unit: `max(0.8V, 0.85*vin)`, not `max(0.8, 0.85*vin)`.
+
 ### Efficiency
 
 ```kdl
@@ -244,7 +261,7 @@ Each layer runs only if the previous layers produced no errors, and reports all 
 5. **Electrical, per scenario:**
    - Loading: `overload`, `converter-load`, `provider-load`, `switch-load`
    - Input voltage: `input-range`, `input-headroom`
-   - Regulation: `dropout`, `dropout-margin`, `converter-kind`, `eff-extrapolated`, `efficiency`
+   - Regulation: `dropout`, `dropout-margin`, `output-limited`, `output-limit-margin`, `converter-kind`, `eff-extrapolated`, `efficiency`, `vlim`
    - Solver: `collapse`, `no-convergence`
    - State: `unpowered` (info)
 
@@ -254,7 +271,7 @@ The solver computes a steady-state DC solution per scenario:
 
 1. **Forward pass** in topological order. This computes each net's nominal voltage and its min/max range:
    - Providers use their spec minus I·r.
-   - Switching converters use their setpoint.
+   - Switching converters use their setpoint, capped by `vlim` when given.
    - Linear regulators use min(setpoint, V_in − dropout(I)), with dropout scaled linearly from `at=`.
    - Switches and series elements subtract I·R.
    - OR-ing picks the lowest `priority` among powered inputs, otherwise the highest voltage, then subtracts vf + I·r.

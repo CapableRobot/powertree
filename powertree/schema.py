@@ -21,10 +21,12 @@ RATIO = "ratio"          # 0.9 or "90%"
 VSPEC = "voltage-spec"   # "5V", "5V ±2%", "4.75V..5.25V"
 VRANGE = "voltage-range"  # "3V..5.5V"
 EXPR = "expression"
+VLIM = "voltage-expression"   # output limit: "0.85*vin", "max(0.8V, vin - 0.3V)"
 
 _UNIT_OF = {V: units.VOLT, A: units.AMP, W: units.WATT, OHM: units.OHM}
 _EXAMPLE = {V: '"3.3V"', A: '"250mA"', W: '"1.2W"', OHM: '"45mΩ"', RATIO: '0.9 or "90%"',
-            VSPEC: '"5V ±2%"', VRANGE: '"3V..5.5V"', EXPR: '"0.9 - 0.02*iout/1A"'}
+            VSPEC: '"5V ±2%"', VRANGE: '"3V..5.5V"', EXPR: '"0.9 - 0.02*iout/1A"',
+            VLIM: '"0.85*vin" or "vin - 0.4V"'}
 
 
 @dataclass
@@ -110,6 +112,16 @@ def convert(v: Value, t) -> object:
             return units.parse_range(x)
         except UnitError as e:
             raise ValueError(f"expects a voltage range like {_EXAMPLE[VRANGE]}: {e}")
+    if t == VLIM:
+        if not isinstance(x, str):
+            raise ValueError(f"expects a voltage expression like {_EXAMPLE[VLIM]}")
+        from .expr import LIMIT_VARIABLES
+        try:
+            e = Expr(x, LIMIT_VARIABLES)
+            e.validate_voltage()
+            return e
+        except ExprError as e:
+            raise ValueError(str(e))
     if t == EXPR:
         if not isinstance(x, str):
             raise ValueError("expects an expression string")
@@ -136,9 +148,10 @@ IN_ORING = Spec("OR-ing input; lower priority number wins, else highest voltage.
                 props={**_link, "priority": INT})
 OUT_SOURCE = Spec("Regulated output.",
                   props={"net": NAME, "v": VSPEC, "vmin": V, "vmax": V, "imax": A, "share": BOOL})
-OUT_CONVERTER = Spec("Converter output; range= is the adjustable setpoint range.",
+OUT_CONVERTER = Spec("Converter output; range= is the adjustable setpoint range; vlim= is the highest "
+                     "output the converter can reach, as a function of vin and iout.",
                      props={"net": NAME, "v": VSPEC, "vmin": V, "vmax": V, "range": VRANGE,
-                            "imax": A, "share": BOOL})
+                            "imax": A, "share": BOOL, "vlim": VLIM})
 OUT_PASS = Spec("Pass-through output.", props={"net": NAME, "imax": A, "share": BOOL})
 
 EFF = Spec("Efficiency: constant (eff 0.9), expression (eff expr=...), or datasheet "

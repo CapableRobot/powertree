@@ -231,6 +231,7 @@ def _build_port(pn: Node, direction: str, f: Function, index: int) -> Port:
             v = VSpec(v.nom, vmin if vmin is not None else v.lo, vmax if vmax is not None else v.hi)
         p.v = v
         p.adjust = rng
+        p.vlim = _conv(pn, "vlim", schema.VLIM)
     else:
         p.v = v
         lo = hi = None

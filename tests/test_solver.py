@@ -238,3 +238,44 @@ def test_examples_are_clean():
     for name in ("sensor-board.kdl", "ups.kdl", "rack/rack.kdl"):
         a = analyze(os.path.join(ex, name))
         assert a.ok and not [f for f in a.diags.items if f.severity != "info" and not f.waived], name
+
+
+VLIM = """
+net VSYS
+net V12
+chip P {{ provider {{ out net=VSYS v="{vin}" }} }}
+chip U {{
+    converter buck kind=buck {{
+        in  net=VSYS range="10V..36V"
+        out net=V12 v="12V ±2%" imax="800mA" vlim="{lim}"
+        eff 0.9
+    }}
+}}
+chip L {{ consumer {{ in net=V12; load i="500mA" }} }}
+"""
+
+
+@pytest.mark.parametrize("vin,expect,code", [
+    ("12V", 10.8, "output-limited"),          # 0.9 * 12 V
+    ("15V", 12.0, None),
+    ("13.6V ±5%", 12.0, "output-limit-margin"),  # regulates at 13.6 V, not at 12.92 V
+])
+def test_output_limit(tmp_path, vin, expect, code):
+    a = run(tmp_path, VLIM.format(vin=vin, lim="max(0.8V, 0.9*vin)"))
+    r = a.results["nominal"]
+    assert r.nets["V12"].v == pytest.approx(expect)
+    assert codes(a) == ([code] if code else [])
+    if code == "output-limit-margin":
+        assert r.nets["V12"].lo == pytest.approx(0.9 * 13.6 * 0.95)
+
+
+def test_output_limit_expression_errors(tmp_path):
+    for lim, msg in [("max(0.8, 0.9*vin)", "give it a unit"), ("0.9", "must give a voltage"),
+                     ("vout - 1V", "unknown name 'vout'")]:
+        a = run(tmp_path, VLIM.format(vin="12V", lim=lim))
+        assert any(msg in f.message for f in a.diags.errors), lim
+
+
+def test_output_limit_with_current(tmp_path):
+    a = run(tmp_path, VLIM.format(vin="12V", lim="vin - 2Ω*iout"))
+    assert a.results["nominal"].nets["V12"].v == pytest.approx(11.0)
