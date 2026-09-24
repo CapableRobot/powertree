@@ -63,7 +63,7 @@ def _board_power(r: Result, d, b) -> float:
 
 
 def scenario_text(a: Analysis, r: Result, summary: bool = False) -> str:
-    """Full report, or with summary=True only the Board, Group and Power tables."""
+    """Full report, or with summary=True: functions except consumers, and the Board, Group and Power tables."""
     d = a.design
     out = [f"=== {d.name} — scenario '{r.scenario}' (loads {r.loads}) "
            f"— {'converged' if r.converged else 'NOT converged'} in {r.iterations} iterations"]
@@ -84,23 +84,27 @@ def scenario_text(a: Analysis, r: Result, summary: bool = False) -> str:
                          fmt(nr.i, AMP), power, drivers])
         out += _table(["Net", "V nom", "V range", "Load", "Power", "Source"], rows, {1, 3, 4}) + [""]
 
-        rows = []
-        for path, fr in r.funcs.items():
-            f = fr.func
-            kind = f.kind + (f"/{f.subkind}" if f.subkind else "")
-            state = "off" if not fr.on else ("unpowered" if not fr.powered else "")
-            rows.append([path, kind,
-                         fmt(fr.vin, VOLT) if fr.vin is not None else "",
-                         fmt(fr.vout, VOLT) if fr.vout is not None else "",
-                         fmt(fr.iin, AMP) if f.ins else "",
-                         fmt(fr.iout, AMP) if f.outs else "",
-                         pct(fr.eff) if fr.eff is not None else "",
-                         fmt(fr.heat, WATT),
-                         pct(fr.loading) if fr.loading is not None else "",
-                         state])
-        out += _table(["Function", "Kind", "Vin", "Vout", "Iin", "Iout", "Eff", "Heat", "Load%", "State"],
-                      rows, {2, 3, 4, 5, 6, 7, 8}) + [""]
 
+    rows = []
+    for path, fr in r.funcs.items():
+        f = fr.func
+        if summary and f.kind == "consumer":
+            continue
+        kind = f.kind + (f"/{f.subkind}" if f.subkind else "")
+        state = "off" if not fr.on else ("unpowered" if not fr.powered else "")
+        rows.append([path, kind,
+                     fmt(fr.vin, VOLT) if fr.vin is not None else "",
+                     fmt(fr.vout, VOLT) if fr.vout is not None else "",
+                     fmt(fr.iin, AMP) if f.ins else "",
+                     fmt(fr.iout, AMP) if f.outs else "",
+                     pct(fr.eff) if fr.eff is not None else "",
+                     fmt(fr.heat, WATT),
+                     pct(fr.loading) if fr.loading is not None else "",
+                     state])
+    out += _table(["Function", "Kind", "Vin", "Vout", "Iin", "Iout", "Eff", "Heat", "Load%", "State"],
+                  rows, {2, 3, 4, 5, 6, 7, 8}) + [""]
+
+    if not summary:
         rows = []
         for ref, chip in sorted(d.chips.items(), key=lambda kv: -r.chip_heat[kv[0]]):
             sinks = [f for f in chip.functions.values() if f.kind != "provider"]
@@ -226,10 +230,11 @@ def to_dot(a: Analysis, scenario: str) -> str:
             if f.scenario in (None, scenario) and f.severity == "warning" and not f.waived and f.target}
     title = (f"{d.name} — {scenario}  |  source {fmt(r.source_power, WATT)}, "
              f"heat {fmt(r.board_heat, WATT)}")
-    L = ["digraph power {", "  rankdir=LR; newrank=true; nodesep=0.25; ranksep=0.6;",
-         f"  label={_q(title)}; labelloc=t; fontname=Helvetica;",
-         '  node [fontname=Helvetica, fontsize=10, shape=box, style="rounded,filled"];',
-         "  edge [fontname=Helvetica, fontsize=9, color=gray40];"]
+    L = ["digraph power {", '  charset="UTF-8"; rankdir=LR; newrank=true; nodesep=0.25; ranksep=0.6;',
+         '  fontname="Helvetica,Arial,sans-serif"; bgcolor=white;',
+         f"  label={_q(title)}; labelloc=t;",
+         '  node [fontname="Helvetica,Arial,sans-serif", fontsize=10, shape=box, style="rounded,filled"];',
+         '  edge [fontname="Helvetica,Arial,sans-serif", fontsize=9, color=gray40];']
     def chip_cluster(ref, chip, pad):
         short = ref[len(chip.board) + 1:] if chip.board else ref
         title = f"{short}" + (f"  {chip.part}" if chip.part else "") + (f"\n{chip.desc}" if chip.desc else "")

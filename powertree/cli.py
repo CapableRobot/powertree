@@ -3,12 +3,11 @@ from __future__ import annotations
 
 import argparse
 import os
-import shutil
-import subprocess
 import sys
 
 from .analysis import analyze
 from .report import findings_text, scenario_text, to_dot, to_json
+from .render import RenderError, render
 from .schema import schema_reference
 
 
@@ -25,12 +24,16 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("-s", "--scenario", action="append", help="scenario(s) to run (default: all)")
     r.add_argument("--json", action="store_true", help="machine-readable output")
     r.add_argument("--summary", action="store_true",
-                   help="only the Board, Group and Power tables (plus findings)")
+                   help="functions except consumers, plus the Board, Group and Power tables")
 
     g = sub.add_parser("dot", help="write a Graphviz graph for one scenario")
     g.add_argument("file")
     g.add_argument("-s", "--scenario", help="scenario (default: first)")
-    g.add_argument("-o", "--output", help="output .dot/.svg/.png/.pdf (default: stdout DOT)")
+    g.add_argument("-o", "--output", help="output file; format from extension: .dot .svg .png .pdf ... "
+                                          "(default: DOT on stdout)")
+    g.add_argument("-T", "--format", dest="fmt", help="output format if it differs from the extension")
+    g.add_argument("--dpi", type=int, default=200, help="resolution for raster formats like PNG (default 200)")
+    g.add_argument("--dot", help="path to Graphviz dot(.exe) (default: $POWERTREE_DOT, then PATH)")
 
     for sp in (c, r, g):
         sp.add_argument("--lib", action="append", metavar="NAME=PATH",
@@ -63,15 +66,16 @@ def main(argv: list[str] | None = None) -> int:
         if not a.output:
             print(dot)
         else:
-            ext = os.path.splitext(a.output)[1].lstrip(".").lower()
+            ext = (a.fmt or os.path.splitext(a.output)[1].lstrip(".")).lower()
             if ext in ("", "dot", "gv"):
                 with open(a.output, "w", encoding="utf-8") as fh:
                     fh.write(dot)
-            elif shutil.which("dot"):
-                subprocess.run(["dot", f"-T{ext}", "-o", a.output], input=dot.encode(), check=True)
             else:
-                print("error: Graphviz 'dot' not found; write a .dot file instead", file=sys.stderr)
-                return 2
+                try:
+                    render(dot, a.output, ext, a.dpi, a.dot)
+                except RenderError as e:
+                    print(f"error: {e}", file=sys.stderr)
+                    return 2
             print(f"wrote {a.output}", file=sys.stderr)
 
     print(findings_text(an.diags), file=sys.stderr if a.cmd == "dot" else sys.stdout)
