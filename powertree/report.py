@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 
 from .analysis import Analysis
 from .diagnostics import Diagnostics
@@ -24,6 +25,34 @@ def _v(x):
     return fmt(x, VOLT) if x is not None else "off"
 
 
+def _loc(span) -> str:
+    if span is None:
+        return ""
+    f = span.file
+    try:
+        rel = os.path.relpath(f)
+        f = rel if len(rel) < len(f) else f
+    except ValueError:
+        pass
+    return f"{f}:{span.line}:{span.col}"
+
+
+def _board_power(r: Result, d, b) -> float:
+    nets = set(b.ports.values())
+    p = 0.0
+    for f in d.functions():
+        if not f.path.startswith(b.prefix):
+            continue
+        fr = r.funcs[f.path]
+        for port in f.ins:
+            if port.net in nets and fr.vin is not None:
+                p += r.nets[port.net].v * r.port_i[port.path] if r.nets[port.net].v else 0.0
+        for port in f.outs:
+            if port.net in nets:
+                p -= fr.pout
+    return p
+
+
 def scenario_text(a: Analysis, r: Result) -> str:
     d = a.design
     out = [f"=== {d.name} — scenario '{r.scenario}' (loads {r.loads}) "
@@ -34,20 +63,16 @@ def scenario_text(a: Analysis, r: Result) -> str:
         nr = r.nets[n.name]
         drivers = ", ".join(p.func.path for p in n.drivers)
         rng = f"{fmt(nr.lo, VOLT)} .. {fmt(nr.hi, VOLT)}" if nr.powered else ""
+        power = fmt(nr.v * nr.i, WATT) if nr.powered else ""
         rows.append([n.name if not n.anonymous else f"{n.name} (direct)", _v(nr.v), rng,
-                     fmt(nr.i, AMP), drivers])
-    out += ["Nets"] + _table(["net", "V nom", "V range", "load", "source"], rows, {1, 3}) + [""]
+                     fmt(nr.i, AMP), power, drivers])
+    out += _table(["Net", "V nom", "V range", "Load", "Power", "Source"], rows, {1, 3, 4}) + [""]
 
     rows = []
     for path, fr in r.funcs.items():
         f = fr.func
         kind = f.kind + (f"/{f.subkind}" if f.subkind else "")
-        if not fr.on:
-            state = "off"
-        elif not fr.powered:
-            state = "unpowered"
-        else:
-            state = ""
+        state = "off" if not fr.on else ("unpowered" if not fr.powered else "")
         rows.append([path, kind,
                      fmt(fr.vin, VOLT) if fr.vin is not None else "",
                      fmt(fr.vout, VOLT) if fr.vout is not None else "",
@@ -57,23 +82,39 @@ def scenario_text(a: Analysis, r: Result) -> str:
                      fmt(fr.heat, WATT),
                      pct(fr.loading) if fr.loading is not None else "",
                      state])
-    out += ["Functions"] + _table(["function", "kind", "Vin", "Vout", "Iin", "Iout", "eff", "heat",
-                                   "load%", "state"], rows, {2, 3, 4, 5, 6, 7, 8}) + [""]
+    out += _table(["Function", "Kind", "Vin", "Vout", "Iin", "Iout", "Eff", "Heat", "Load%", "State"],
+                  rows, {2, 3, 4, 5, 6, 7, 8}) + [""]
+
+    def power_in(chips) -> float:
+        return sum(r.funcs[f.path].pin for c in chips for f in c.functions.values() if f.kind != "provider")
 
     rows = []
-    for ref, chip in d.chips.items():
+    for ref, chip in sorted(d.chips.items(), key=lambda kv: -r.chip_heat[kv[0]]):
         sinks = [f for f in chip.functions.values() if f.kind != "provider"]
-        pin = fmt(sum(r.funcs[f.path].pin for f in sinks), WATT) if sinks else "—"
-        rows.append([ref, chip.part or "", chip.desc or "", fmt(r.chip_heat[ref], WATT), pin])
-    rows.sort(key=lambda x: -r.chip_heat[x[0]])
-    out += ["Chips (sorted by heat)"] + _table(["chip", "part", "desc", "heat", "power in"], rows, {3, 4})
-    out += ["",
-            f"Source power:      {fmt(r.source_power, WATT)}",
-            f"Consumer power:    {fmt(r.load_power, WATT)}"
-            + (f"  (of which off-board {fmt(r.offboard_power, WATT)})" if r.offboard_power else ""),
-            f"Heat on board:     {fmt(r.board_heat, WATT)}",
-            f"System efficiency: {pct(r.system_efficiency) if r.system_efficiency is not None else '—'}",
-            ""]
+        rows.append([ref, chip.part or "", chip.desc or "", fmt(r.chip_heat[ref], WATT),
+                     fmt(power_in([chip]), WATT) if sinks else "—"])
+    out += _table(["Chip", "Part", "Desc", "Heat", "Power in"], rows, {3, 4}) + [""]
+
+    src = r.source_power
+
+    def share(x):
+        return pct(x / src) if src > 0 else ""
+
+    names = {"converter": "Converter loss", "switch": "Switch loss", "series": "Series loss",
+             "oring": "OR-ing loss"}
+    rows = [["Source output", fmt(src, WATT), share(src)]]
+    for kind, label in names.items():
+        if kind in r.losses and (kind in ("converter", "switch") or r.losses[kind] > 0):
+            rows.append([f"  {label}", fmt(r.losses[kind], WATT), share(r.losses[kind])])
+    onboard = r.load_power - r.offboard_power
+    rows.append(["  On-board consumers", fmt(onboard, WATT), share(onboard)])
+    rows.append(["  External consumers", fmt(r.offboard_power, WATT), share(r.offboard_power)])
+    internal = r.losses.get("provider", 0.0)
+    if internal > 0:
+        rows.append(["Source internal loss", fmt(internal, WATT), ""])
+    rows.append(["Heat on board", fmt(r.board_heat, WATT), share(r.board_heat)])
+    rows.append(["System efficiency", pct(r.system_efficiency) if r.system_efficiency is not None else "—", ""])
+    out += _table(["Power", "Value", "% of source"], rows, {1, 2}) + [""]
     return "\n".join(out)
 
 
@@ -81,11 +122,20 @@ def findings_text(diags: Diagnostics) -> str:
     items = diags.sorted()
     if not items:
         return "No findings."
+    rows = []
+    for f in items:
+        sev = "waived" if f.waived else f.severity
+        msg = f"{f.message} [{f.code}]"
+        if f.waived:
+            msg += f" (was {f.severity}; {f.waived})"
+        rows.append([sev, f.scenario or "-", _loc(f.span), msg])
+    widths = [max(len(r[i]) for r in rows) for i in range(3)]
+    lines = ["  ".join(c.ljust(w) for c, w in zip(r[:3], widths)) + "  " + r[3] for r in rows]
     n_err = sum(1 for f in items if f.severity == "error" and not f.waived)
     n_warn = sum(1 for f in items if f.severity == "warning" and not f.waived)
+    n_info = sum(1 for f in items if f.severity == "info" and not f.waived)
     n_waived = sum(1 for f in items if f.waived)
-    lines = [str(f) for f in items]
-    lines.append(f"\n{n_err} error(s), {n_warn} warning(s), {n_waived} waived")
+    lines.append(f"\n{n_err} error(s), {n_warn} warning(s), {n_info} info, {n_waived} waived")
     return "\n".join(lines)
 
 
@@ -101,10 +151,13 @@ def to_json(a: Analysis) -> str:
                               "offboard": fr.offboard}
                           for p, fr in r.funcs.items()},
             "chip_heat": r.chip_heat,
+            "board_scenarios": r.board_scenarios,
+            "losses": r.losses,
             "totals": {"source_power": r.source_power, "load_power": r.load_power,
                        "offboard_power": r.offboard_power, "board_heat": r.board_heat,
                        "system_efficiency": r.system_efficiency},
         }
+
     return json.dumps({"design": a.design.name if a.design else None,
                        "results": {k: res(v) for k, v in a.results.items()},
                        "findings": [f.to_dict() for f in a.diags.sorted()]}, indent=2)
