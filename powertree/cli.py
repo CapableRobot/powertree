@@ -24,6 +24,8 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("file")
     r.add_argument("-s", "--scenario", action="append", help="scenario(s) to run (default: all)")
     r.add_argument("--json", action="store_true", help="machine-readable output")
+    r.add_argument("--summary", action="store_true",
+                   help="only the Board, Group and Power tables (plus findings)")
 
     g = sub.add_parser("dot", help="write a Graphviz graph for one scenario")
     g.add_argument("file")
@@ -54,7 +56,7 @@ def main(argv: list[str] | None = None) -> int:
             print(line)
     if a.cmd == "report" and an.design is not None:
         for res in an.results.values():
-            print(scenario_text(an, res))
+            print(scenario_text(an, res, summary=a.summary))
     if a.cmd == "dot" and an.results:
         name = a.scenario or next(iter(an.results))
         dot = to_dot(an, name)

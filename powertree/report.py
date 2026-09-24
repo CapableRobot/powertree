@@ -62,49 +62,51 @@ def _board_power(r: Result, d, b) -> float:
     return p
 
 
-def scenario_text(a: Analysis, r: Result) -> str:
+def scenario_text(a: Analysis, r: Result, summary: bool = False) -> str:
+    """Full report, or with summary=True only the Board, Group and Power tables."""
     d = a.design
     out = [f"=== {d.name} — scenario '{r.scenario}' (loads {r.loads}) "
            f"— {'converged' if r.converged else 'NOT converged'} in {r.iterations} iterations"]
     out += libraries_text(a)
     out.append("")
 
-    rows = []
-    for n in d.nets.values():
-        nr = r.nets[n.name]
-        drivers = ", ".join(p.func.path for p in n.drivers)
-        rng = f"{fmt(nr.lo, VOLT)} .. {fmt(nr.hi, VOLT)}" if nr.powered else ""
-        power = fmt(nr.v * nr.i, WATT) if nr.powered else ""
-        rows.append([n.name if not n.anonymous else f"{n.name} (direct)", _v(nr.v), rng,
-                     fmt(nr.i, AMP), power, drivers])
-    out += _table(["Net", "V nom", "V range", "Load", "Power", "Source"], rows, {1, 3, 4}) + [""]
-
-    rows = []
-    for path, fr in r.funcs.items():
-        f = fr.func
-        kind = f.kind + (f"/{f.subkind}" if f.subkind else "")
-        state = "off" if not fr.on else ("unpowered" if not fr.powered else "")
-        rows.append([path, kind,
-                     fmt(fr.vin, VOLT) if fr.vin is not None else "",
-                     fmt(fr.vout, VOLT) if fr.vout is not None else "",
-                     fmt(fr.iin, AMP) if f.ins else "",
-                     fmt(fr.iout, AMP) if f.outs else "",
-                     pct(fr.eff) if fr.eff is not None else "",
-                     fmt(fr.heat, WATT),
-                     pct(fr.loading) if fr.loading is not None else "",
-                     state])
-    out += _table(["Function", "Kind", "Vin", "Vout", "Iin", "Iout", "Eff", "Heat", "Load%", "State"],
-                  rows, {2, 3, 4, 5, 6, 7, 8}) + [""]
-
     def power_in(chips) -> float:
         return sum(r.funcs[f.path].pin for c in chips for f in c.functions.values() if f.kind != "provider")
 
-    rows = []
-    for ref, chip in sorted(d.chips.items(), key=lambda kv: -r.chip_heat[kv[0]]):
-        sinks = [f for f in chip.functions.values() if f.kind != "provider"]
-        rows.append([ref, chip.part or "", chip.desc or "", fmt(r.chip_heat[ref], WATT),
-                     fmt(power_in([chip]), WATT) if sinks else "—"])
-    out += _table(["Chip", "Part", "Desc", "Heat", "Power in"], rows, {3, 4}) + [""]
+    if not summary:
+        rows = []
+        for n in d.nets.values():
+            nr = r.nets[n.name]
+            drivers = ", ".join(p.func.path for p in n.drivers)
+            rng = f"{fmt(nr.lo, VOLT)} .. {fmt(nr.hi, VOLT)}" if nr.powered else ""
+            power = fmt(nr.v * nr.i, WATT) if nr.powered else ""
+            rows.append([n.name if not n.anonymous else f"{n.name} (direct)", _v(nr.v), rng,
+                         fmt(nr.i, AMP), power, drivers])
+        out += _table(["Net", "V nom", "V range", "Load", "Power", "Source"], rows, {1, 3, 4}) + [""]
+
+        rows = []
+        for path, fr in r.funcs.items():
+            f = fr.func
+            kind = f.kind + (f"/{f.subkind}" if f.subkind else "")
+            state = "off" if not fr.on else ("unpowered" if not fr.powered else "")
+            rows.append([path, kind,
+                         fmt(fr.vin, VOLT) if fr.vin is not None else "",
+                         fmt(fr.vout, VOLT) if fr.vout is not None else "",
+                         fmt(fr.iin, AMP) if f.ins else "",
+                         fmt(fr.iout, AMP) if f.outs else "",
+                         pct(fr.eff) if fr.eff is not None else "",
+                         fmt(fr.heat, WATT),
+                         pct(fr.loading) if fr.loading is not None else "",
+                         state])
+        out += _table(["Function", "Kind", "Vin", "Vout", "Iin", "Iout", "Eff", "Heat", "Load%", "State"],
+                      rows, {2, 3, 4, 5, 6, 7, 8}) + [""]
+
+        rows = []
+        for ref, chip in sorted(d.chips.items(), key=lambda kv: -r.chip_heat[kv[0]]):
+            sinks = [f for f in chip.functions.values() if f.kind != "provider"]
+            rows.append([ref, chip.part or "", chip.desc or "", fmt(r.chip_heat[ref], WATT),
+                         fmt(power_in([chip]), WATT) if sinks else "—"])
+        out += _table(["Chip", "Part", "Desc", "Heat", "Power in"], rows, {3, 4}) + [""]
 
     if d.boards:
         rows = []

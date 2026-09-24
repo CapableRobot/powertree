@@ -6,6 +6,7 @@ Plain-text PCB power tree description (KDL v2), with validation, a steady-state 
 pip install -e .                     # or: python -m powertree ...
 powertree check  examples/sensor-board.kdl          # findings only; exit 1 on errors (--strict: warnings too)
 powertree report examples/sensor-board.kdl -s peak  # nets, functions, chip heat, totals, findings
+powertree report examples/rack/rack.kdl --summary   # only board, group and power tables
 powertree report examples/ups.kdl --json            # machine-readable
 powertree dot    examples/ups.kdl -s on-battery -o ups.svg   # needs Graphviz for svg/png/pdf
 powertree check  examples/rack/rack.kdl --lib corp=examples/lib   # boards, counts, library roots
@@ -17,7 +18,7 @@ powertree schema                                    # every node/property, gener
   - `sensor-board.kdl` — 12V → 5V → LDO/buck, part library
   - `ups.kdl` — adapter + battery, OR-ing, charger, harness, waiver
   - `rack/` — project file with a library root, a PSU feeding 4 counted `io-card` boards, board scenarios
-- `tests/` — `pytest` (91 tests, including a parity check against the `ckdl` reference parser when it is installed)
+- `tests/` — `pytest` (92 tests, including a parity check against the `ckdl` reference parser when it is installed)
 
 ## Code layout
 

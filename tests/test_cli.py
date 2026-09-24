@@ -35,3 +35,12 @@ def test_schema_reference(capsys):
     assert main(["schema"]) == 0
     out = capsys.readouterr().out
     assert "converter [name]" in out and "rdson <ohms>" in out
+
+
+def test_report_summary(capsys):
+    assert main(["report", os.path.join(EX, "rack", "rack.kdl"), "-s", "peak", "--summary"]) == 0
+    out = capsys.readouterr().out
+    assert "Board " in out and "Group " in out and "Source output" in out
+    assert "Function " not in out and "Net " not in out and "Chip " not in out
+    assert main(["report", os.path.join(EX, "rack", "rack.kdl"), "-s", "peak"]) == 0
+    assert "Function " in capsys.readouterr().out
