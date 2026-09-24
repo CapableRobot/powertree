@@ -137,7 +137,18 @@ board IO count=8 design=io-card { port VIN net="IO{n}_24V" }
 - The board's `rules` are ignored; the top-level design's rules apply.
 - The board's scenarios are available to the parent through `set <board> scenario=<name>`.
 
-A design analysed on its own reports its port nets as undriven, with a hint to analyse it from its parent.
+### Analysing a board on its own
+
+With no source on its input ports, a board analysed on its own reports the port nets as undriven. A `standalone` block fixes this. Its contents are used only when the file is the top-level design, and are dropped entirely when the file is instantiated as a board, so they never add a second driver to the parent's net:
+
+```kdl
+standalone {
+    chip TP1 desc="Bench supply on VIN" { provider { out net=VIN_24V v="24V ±3%" imax="1A" } }
+    scenario low-line { set TP1 v="21.6V ±3%" }
+}
+```
+
+A `standalone` block may contain `net`, `chip`, `board`, `scenario`, `rules` and `waive`. Scenarios that refer to standalone chips belong inside it; otherwise they would be unresolved references when the file is used as a board. The report lists what the block added (info `standalone`).
 
 `dir=` is informational in this version.
 
@@ -202,6 +213,8 @@ scenario night base="active, low-power" {
 
 If no scenario is defined, a single implicit `nominal` scenario runs.
 
+**Composing on the command line.** `-s a+b` runs one scenario made of `a` then `b`, as if you had written `scenario a+b base="a, b"`. Repeating `-s` runs separate scenarios: `-s peak -s low-line` produces two reports. A scenario actually named `a+b` takes precedence over composition.
+
 ## Rules and waivers
 
 | Rule | Default | Finding |
@@ -221,7 +234,7 @@ Each layer runs only if the previous layers produced no errors, and reports all 
 2. **Structure:** `unknown-node`, `unknown-property`, `bad-value`, `argument-count`, `missing-property`, `unexpected-children`, `duplicate-property`
 3. **Model and references:**
    - Loading: `file-not-found`, `library`, `duplicate-part`, `duplicate-design`, `ambiguous-part`, `ambiguous-design`, `unknown-design`, `kind-mismatch`, and the warning `unknown-part` for a near-miss part name
-   - Hierarchy: `bad-name`, `template`, `unknown-port`, `unbound-port`, `duplicate-port`, `duplicate-board`, `board-cycle`, and info `ignored-rules`
+   - Hierarchy: `bad-name`, `template`, `unknown-port`, `unbound-port`, `duplicate-port`, `duplicate-board`, `board-cycle`, and info `ignored-rules`, `standalone`
    - Function definitions: `port-count`, `missing-voltage`, `missing-efficiency`, `missing-load`, `load-model`, `efficiency`, `setpoint-range`
    - Duplicates: `duplicate-net`, `duplicate-chip`, `duplicate-function`, `duplicate-scenario`
    - References: `undefined-net`, `bad-reference`, `conflicting-link`, `undefined-scenario`, `scenario-cycle`

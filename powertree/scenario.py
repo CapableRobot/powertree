@@ -39,11 +39,16 @@ def scenario_names(d: Design) -> list[str]:
 def effective(d: Design, name: str, diags: Diagnostics) -> Effective | None:
     if not d.scenarios and name == DEFAULT_SCENARIO:
         return Effective(name)
-    if name not in d.scenarios:
-        diags.error("undefined-scenario", f"no scenario '{name}'; defined: {', '.join(d.scenarios)}")
+    parts = [name] if name in d.scenarios else [p.strip() for p in name.split("+")]
+    missing = [p for p in parts if p not in d.scenarios]
+    if missing:
+        diags.error("undefined-scenario", f"no scenario '{missing[0]}'; defined: {', '.join(d.scenarios)}")
         return None
     out = Effective(name)
-    return out if _apply(d, d.scenarios[name], out, (), diags) else None
+    for p in parts:      # "a+b": apply a, then b (like base="a, b" with no settings of its own)
+        if not _apply(d, d.scenarios[p], out, (), diags):
+            return None
+    return out
 
 
 def _apply(d: Design, s: ScenarioDef, out: Effective, stack: tuple, diags: Diagnostics) -> bool:

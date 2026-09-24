@@ -444,6 +444,15 @@ class _Builder:
 
     def body(self, nodes: list[Node], ctx: _Ctx) -> None:
         d, diags = self.d, self.diags
+        standalone = [c for n in nodes if n.name == "standalone" for c in n.children]
+        nodes = [n for n in nodes if n.name != "standalone"]
+        if ctx.board is None and standalone:
+            nodes = nodes + standalone
+            added = [n for n in standalone if n.name in ("chip", "board")]
+            if added:
+                names = ", ".join(str(n.args[0].value) for n in added if n.args)
+                diags.info("standalone", f"standalone block adds {names} (only used when this file is "
+                                         f"analysed on its own)", added[0].span)
         ports = [n for n in nodes if n.name == "port"]
         for n in nodes:
             if n.name != "net":

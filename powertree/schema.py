@@ -315,3 +315,9 @@ PROJECT = {
     "library": Spec("Named library root: use \"<name>:file.kdl\", part=<name>:PART.",
                     args=(1, 1, NAME), arg_names="<name>", props={"path": STR}, required=("path",)),
 }
+
+TOP["standalone"] = Spec(
+    "Nodes used only when this file is the top-level design (e.g. a bench supply for a board's "
+    "input port); ignored when the design is instantiated as a board.",
+    children={k: TOP[k] for k in ("net", "chip", "board", "scenario", "rules", "waive")})
+

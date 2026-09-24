@@ -272,3 +272,30 @@ def test_findings_columns_align(tmp_path):
         sev, scen, loc = l.split()[:3]
         offsets.add(l.index(l.split()[3], l.index(loc) + len(loc)))
     assert len(offsets) == 1
+
+
+def test_standalone_block_and_composition(tmp_path):
+    card = CARD + """
+    standalone {
+        chip TP desc="bench" { provider { out net=VIN v="24V ±5%" } }
+        scenario low { set TP v="7V" }
+    }
+    """
+    p = tmp_path / "card.kdl"
+    p.write_text(card)
+    a = analyze(str(p), ["idle+low", "low+idle", "run"])
+    assert a.ok, a.diags.items
+    assert "standalone" in codes(a, "info")
+    r = a.results["idle+low"]
+    assert r.nets["VIN"].v == 7 and r.loads == "min"
+    assert not r.funcs["D:2.led"].on
+    assert a.results["run"].nets["VIN"].v == 24
+    assert "undefined-scenario" in codes(analyze(str(p), ["run+nope"]), "error")
+    # instantiated as a board, the standalone block is ignored: no extra driver on the port net
+    a = run(tmp_path, """
+    use "card.kdl"
+    net BUS
+    chip PS { provider { out net=BUS v="24V" } }
+    board C design=card { port VIN net=BUS }
+    """)
+    assert a.ok and "C.TP" not in a.design.chips and "standalone" not in codes(a)
