@@ -1,0 +1,46 @@
+=== sensor-board — scenario 'peak' (loads max) — converged in 3 iterations
+
+Net          V nom  V range             Load    Power  Source
+----------  ------  ----------------  ------  -------  -----------
+VIN_12V       12 V  11.4 V .. 12.6 V  312 mA   3.74 W  J1.provider
+V5             5 V  4.9 V .. 5.1 V    671 mA   3.36 W  U1.buck
+V3P3_A       3.3 V  3.27 V .. 3.33 V    5 mA  16.5 mW  U2.ldo
+V3P3_D       3.3 V  3.25 V .. 3.35 V  234 mA   773 mW  U3.buck
+V3P3_RADIO  3.29 V  3.24 V .. 3.34 V  120 mA   395 mW  U4.sw
+
+Function     Kind                 Vin    Vout      Iin    Iout    Eff     Heat  Load%  State
+-----------  ----------------  ------  ------  -------  ------  -----  -------  -----  -----
+J1.provider  provider                    12 V           312 mA             0 W  15.6%
+U1.buck      converter/buck      12 V     5 V   312 mA  671 mA  89.8%   383 mW  22.4%
+U2.ldo       converter/linear     5 V   3.3 V  5.02 mA    5 mA  65.7%  8.62 mW   1.0%
+U3.buck      converter/buck       5 V   3.3 V   166 mA  234 mA  93.1%  57.6 mW  31.2%
+U4.sw        switch             3.3 V  3.29 V   120 mA  120 mA          749 µW   6.0%
+U10.vdd      consumer           3.3 V            90 mA                  297 mW
+U10.vdda     consumer           3.3 V             5 mA                 16.5 mW
+U11.vcc      consumer          3.29 V           120 mA                  395 mW
+U12.vdd      consumer           3.3 V          24.2 mA                   80 mW
+J2.vbus      consumer             5 V           500 mA                     0 W
+
+Chip  Part       Desc                 Heat  Power in
+----  ---------  ----------------  -------  --------
+U11              Radio module       395 mW    395 mW
+U1    TPS54331                      383 mW    3.74 W
+U10   STM32U575  MCU                314 mW    314 mW
+U12              Sensor              80 mW     80 mW
+U3    TPS62840   750mA buck        57.6 mW    831 mW
+U2    TLV75533                     8.62 mW   25.1 mW
+U4    TPS22918                      749 µW    396 mW
+J1               12V wall adapter      0 W         —
+J2               USB-A host port       0 W     2.5 W
+
+Power                  Value  % of source
+--------------------  ------  -----------
+Source output         3.74 W       100.0%
+  Converter loss      449 mW        12.0%
+  Switch loss         749 µW         0.0%
+  On-board consumers  789 mW        21.1%
+  External consumers   2.5 W        66.9%
+Heat on board         1.24 W        33.1%
+System efficiency      88.0%
+
+No findings.
