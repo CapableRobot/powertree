@@ -1,0 +1,32 @@
+// Reusable part definitions. Values are illustrative; verify against datasheets.
+
+part TPS54331 desc="3A 28V buck" {
+    converter buck kind=buck {
+        in  range="3.5V..28V"
+        out range="0.8V..25V" imax="3A"
+        iq "110uA"
+        eff vin="12V" vout="5V" {          // datasheet curve, interpolated in log(Iout)
+            point iout="10mA"  eff=0.62
+            point iout="100mA" eff=0.84
+            point iout="1A"    eff=0.91
+            point iout="3A"    eff=0.88
+        }
+    }
+}
+
+part TLV75533 desc="500mA fixed 3.3V LDO" {
+    converter ldo kind=linear {            // Iin = Iout + Iq; no efficiency needed
+        in  range="1.45V..5.5V"
+        out v="3.3V ±1%" imax="500mA"
+        dropout "200mV" at="500mA"
+        iq "25uA"
+    }
+}
+
+part TPS22918 desc="2A load switch" {
+    switch sw {
+        in  range="1V..5.5V"
+        out imax="2A"
+        rdson "52mΩ"
+    }
+}

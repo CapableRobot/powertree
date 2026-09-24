@@ -1,0 +1,87 @@
+design ups-demo desc="Example: adapter + battery backup, OR-ing, charger, off-board load via harness"
+
+net VIN_24V
+net VCHG
+net VBAT
+net VSYS
+net V5
+net V5_EXT     desc="Display side of the harness"
+net V3P3
+
+chip J1 desc="24V adapter" {
+    provider { out net=VIN_24V v="24V ±5%" imax="2.5A" }
+}
+
+chip U1 part=BQ24610 desc="2S Li-ion charger" {
+    converter chg kind=charger {
+        in  net=VIN_24V range="5V..28V"
+        out net=VCHG v="8.4V" imax="2A"
+        eff 0.92
+    }
+}
+
+chip BT1 desc="2S Li-ion pack" {
+    consumer charge { in net=VCHG; load i="1A" }               // charge current drawn from charger
+    provider cell   { out net=VBAT v="6V..8.4V" imax="5A"; r "80mΩ" }
+}
+
+chip U2 part=LTC4416 desc="Ideal-diode OR" {
+    oring or {
+        in  net=VIN_24V priority=1                             // adapter preferred when present
+        in  net=VBAT    priority=2
+        out net=VSYS imax="3.6A"
+        vf "20mV"
+        r  "40mΩ"
+    }
+}
+
+chip U3 part=LM5164 desc="5V buck" {
+    converter buck kind=buck {
+        in  net=VSYS range="5.5V..100V"
+        out net=V5 v="5V ±2%" imax="800mA"
+        iq "10uA"
+        eff expr="0.93 - 0.05 * iout / 1A"
+    }
+}
+
+chip U5 desc="3.3V LDO" {
+    converter ldo kind=linear {
+        in  net=V5 range="2.5V..6V"
+        out net=V3P3 v="3.3V ±2%" imax="300mA"
+        dropout "250mV" at="300mA"
+        iq "50uA"
+    }
+}
+
+chip U10 desc="MCU" {
+    consumer vdd { in net=V3P3 v="3.3V ±10%"; load i="60mA" imin="2mA" imax="150mA" }
+}
+
+chip CBL1 desc="Harness to display, 2m" {
+    series { in net=V5; out net=V5_EXT; r "150mΩ" }
+}
+
+chip DSP1 desc="Display module (off-board)" {
+    consumer vin { in net=V5_EXT range="4.5V..5.5V"; load p="2W" pmin="0.3W" pmax="3W" offboard=#true }
+}
+
+scenario on-mains   desc="Adapter present, battery charging"
+scenario full       base=on-mains desc="Adapter present, battery full" {
+    set BT1.charge i="0A"
+}
+scenario on-battery base=on-mains desc="Adapter unplugged" {
+    set J1 on=#false
+}
+scenario peak-on-battery base=on-battery {
+    loads max
+}
+scenario standby base=on-battery {
+    loads min
+}
+
+rules {
+    converter-load max="80%"
+    input-headroom min="3%"
+}
+
+waive converter-load U3 reason="Only at max display brightness; 90% OK per thermal test TR-12"

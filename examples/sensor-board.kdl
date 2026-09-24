@@ -1,0 +1,76 @@
+design sensor-board desc="Example: 12V -> 5V -> LDO / buck -> loads"
+use "lib/regulators.kdl"
+
+net VIN_12V
+net V5
+net V3P3_A     desc="Quiet rail from LDO"
+net V3P3_D
+net V3P3_RADIO
+
+chip J1 desc="12V wall adapter" {
+    provider { out net=VIN_12V v="12V ±5%" imax="2A" }
+}
+
+chip U1 part=TPS54331 {                    // merges onto the library definition by name
+    converter buck {
+        in  net=VIN_12V
+        out net=V5 v="5V ±2%"              // setpoint from feedback divider
+    }
+}
+
+chip U2 part=TLV75533 {
+    converter ldo { in net=V5; out net=V3P3_A }
+}
+
+chip U3 part=TPS62840 desc="750mA buck" {  // not in the library: defined inline
+    converter buck kind=buck {
+        in  net=V5 range="1.8V..6.5V"
+        out net=V3P3_D v="3.3V ±1.5%" imax="750mA"
+        iq "60nA"
+        eff expr="0.94 - 0.03 * (iout / 750mA)"
+    }
+}
+
+chip U4 part=TPS22918 {
+    switch sw enable=RADIO_EN {
+        in  net=V3P3_D
+        out net=V3P3_RADIO
+    }
+}
+
+chip U10 part=STM32U575 desc="MCU" {
+    consumer vdd  { in net=V3P3_D range="1.71V..3.6V"; load i="35mA" imin="15uA" imax="90mA" }
+    consumer vdda { in net=V3P3_A range="1.62V..3.6V"; load i="2mA" imin="1uA" imax="5mA" }
+}
+
+chip U11 desc="Radio module" {
+    consumer vcc { in net=V3P3_RADIO range="3.0V..3.6V"; load i="8mA" imin="0A" imax="120mA" }
+}
+
+chip U12 desc="Sensor" {
+    consumer vdd { in from=U3.buck.out range="3.0V..3.6V"; load p="50mW" pmin="1mW" pmax="80mW" }
+}
+
+chip J2 desc="USB-A host port" {
+    consumer vbus { in net=V5 range="4.75V..5.25V"; load i="100mA" imin="0A" imax="500mA" offboard=#true }
+}
+
+scenario active desc="Nominal operation"
+scenario peak base=active {
+    loads max
+}
+scenario sleep {
+    loads min
+    set U4.sw on=#false
+}
+scenario radio-tx base=active {
+    set U11.vcc i="120mA"
+}
+scenario brownout base=peak {
+    set J1 v="10.8V"                        // adapter at low line
+}
+
+rules {
+    converter-load max="80%"
+    input-headroom min="2%"
+}
