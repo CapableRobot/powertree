@@ -1,0 +1,39 @@
+design io-card desc="IO card: 24V in, eFuse, 5V buck, LDO, MCU, 8 LEDs, 4 relays"
+use "corp:regulators.kdl"
+
+port VIN net=VIN_24V dir=in
+
+net VIN_24V
+net V24_PROT
+net V5
+net V3P3
+
+chip U1 desc="eFuse" {
+    switch efuse { in net=VIN_24V range="9V..36V"; out net=V24_PROT imax="1A"; rdson "60mΩ" }
+}
+chip U2 desc="5V buck" {
+    converter buck kind=buck {
+        in  net=V24_PROT range="6V..42V"
+        out net=V5 v="5V ±2%" imax="600mA"
+        iq "20uA"
+        eff 0.88
+    }
+}
+chip U3 part=corp:TLV75533 {
+    converter ldo { in net=V5; out net=V3P3 }
+}
+chip U10 desc="MCU" {
+    consumer vdd { in net=V3P3 range="3.0V..3.6V"; load i="40mA" imin="1mA" imax="80mA" }
+}
+chip D count=8 desc="Status LED {n}" {
+    consumer led { in net=V5 range="4.5V..5.5V"; load i="5mA" imin="0A" imax="10mA" }
+}
+chip K count=4 desc="Relay coil {n}" {
+    consumer coil { in net=V24_PROT range="18V..30V"; load r="1.2kΩ" }
+}
+
+scenario run
+scenario idle {
+    loads min
+    set K:* on=#false
+}

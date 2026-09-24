@@ -1,0 +1,36 @@
+design rack desc="Example: 24V PSU feeding 4 IO cards through fused harnesses"
+use "io-card.kdl"
+
+net BUS_24V
+net "IO{n}_24V" count=4
+
+chip PS1 desc="24V PSU" {
+    provider { out net=BUS_24V v="24V ±3%" imax="1.5A" }
+}
+chip F count=4 desc="Slot {n} fuse + harness" {
+    series { in net=BUS_24V; out net="IO{n}_24V" imax="1A"; r "120mΩ" }
+}
+chip FAN1 desc="Fan" {
+    consumer { in net=BUS_24V range="12V..27V"; load p="3W" pmax="4.5W" }
+}
+
+board IO count=4 design=io-card {
+    port VIN net="IO{n}_24V"
+}
+
+scenario all-run {
+    set IO:* scenario=run
+}
+scenario mostly-idle base=all-run {
+    set IO:2..4 scenario=idle
+}
+scenario slot1-pulled base=all-run {
+    set IO:1 on=#false
+}
+scenario peak base=all-run {
+    loads max
+}
+
+rules {
+    provider-load max="75%"
+}

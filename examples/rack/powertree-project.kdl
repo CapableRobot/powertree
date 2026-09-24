@@ -1,0 +1,3 @@
+// Project file: named library roots. Design files refer to them as "corp:file.kdl" and part=corp:PART.
+// Override per machine/CI with --lib corp=/path or POWERTREE_LIBS=corp=/path.
+library corp path="../lib"
