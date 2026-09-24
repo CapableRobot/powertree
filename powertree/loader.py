@@ -318,12 +318,25 @@ def _build_function(fn: Node, chip: Chip, diags: Diagnostics) -> Function:
         f.outs.append(_build_port(pn, "out", f, i))
 
     lo, hi, nout = _PORTS[f.kind]
+    # A function with a single input or output gets it implicitly if it is not written, so
+    # `series { r "10mΩ" }` has ports RSENSE.series.in/out. An implicit port is unconnected until
+    # something links to it (from=), and the topology checks report it if nothing does.
+    if not f.ins and lo == hi == 1:
+        f.ins.append(Port("in", f, 0, span=fn.span))
+    if not f.outs and nout == 1:
+        f.outs.append(Port("out", f, 0, span=fn.span))
+
+    def count_msg(direction: str, lo: int, hi: int) -> str:
+        if hi == 0:
+            return f"{f.kind} {f.path} cannot have '{direction}' ports"
+        if lo == hi:
+            return f"{f.kind} {f.path} must have exactly one '{direction}' port"
+        return f"{f.kind} {f.path} needs at least one '{direction}' port"
+
     if not lo <= len(f.ins) <= hi:
-        want = "no" if hi == 0 else ("exactly one" if lo == hi else "at least one")
-        diags.error("port-count", f"{f.kind} {f.path} needs {want} 'in' port(s)", fn.span, f.path)
+        diags.error("port-count", count_msg("in", lo, hi), fn.span, f.path)
     if len(f.outs) != nout:
-        want = "no" if nout == 0 else "exactly one"
-        diags.error("port-count", f"{f.kind} {f.path} needs {want} 'out' port(s)", fn.span, f.path)
+        diags.error("port-count", count_msg("out", nout, nout), fn.span, f.path)
 
     def one(name, t):
         n = fn.child(name)

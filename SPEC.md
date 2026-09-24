@@ -45,6 +45,8 @@ A chip groups all power functions of one physical component. A PMIC is one chip 
 
 Converter kinds: `buck boost buck-boost flyback isolated charge-pump charger linear`. Kind `linear` uses Iin = Iout + Iq and ignores efficiency. Every other kind requires `eff`. The solver sanity-checks `buck` (vin > vout) and `boost` (vin < vout).
 
+**Implicit ports.** A function with exactly one input or output gets that port implicitly when it is not written. So `series { in net=VIN; r "10mΩ" }` still has an output, which another input can link to with `from=RSENSE.series.out` without naming the net between them. OR-ing inputs are never implicit. An implicit port that nothing links to is reported by the topology rules (`unconnected-input` error, `unconnected-output` warning).
+
 `on=#false` on any function turns it off. This is usually set per scenario.
 
 ### Accepted input voltage

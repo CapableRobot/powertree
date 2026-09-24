@@ -20,7 +20,7 @@ powertree schema                                    # every node/property, gener
   - `sensor-board.kdl` — 12V → 5V → LDO/buck, part library
   - `ups.kdl` — adapter + battery, OR-ing, charger, harness, waiver
   - `rack/` — project file with a library root, a PSU feeding 4 counted `io-card` boards, board scenarios
-- `tests/` — `pytest` (94 tests, including a parity check against the `ckdl` reference parser when it is installed)
+- `tests/` — `pytest` (95 tests, including a parity check against the `ckdl` reference parser when it is installed)
 
 ## Code layout
 

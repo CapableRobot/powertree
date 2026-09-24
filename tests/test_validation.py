@@ -1,3 +1,5 @@
+import pytest
+
 from helpers import codes, run
 
 SRC_OK = """
@@ -195,3 +197,32 @@ def test_waivers(tmp_path):
     assert a.ok
     assert codes(a, include_waived=True).count("overload") == 1 and "overload" not in codes(a)
     assert "unused-waiver" in codes(a, "warning")
+
+
+def test_implicit_single_ports(tmp_path):
+    a = run(tmp_path, """
+    net VIN
+    net VOUT
+    chip J1 { provider { out net=VIN v="24V" } }
+    chip RS { series { in net=VIN; r "10mΩ" } }
+    chip Q2 { switch pch { in from=RS.series.out; out net=VOUT; rdson "35mΩ" } }
+    chip L1 { consumer { in net=VOUT; load i="1A" } }
+    """)
+    assert a.ok, a.diags.items
+    r = a.results["nominal"]
+    assert r.nets["~RS.series.out"].v == pytest.approx(24 - 0.01)
+    assert r.nets["VOUT"].v == pytest.approx(24 - 0.045)
+    # implicit ports that stay unlinked are reported by the topology rules, not as port-count
+    a = run(tmp_path, """
+    net A
+    chip P { provider { out net=A v="5V" } }
+    chip R { series { r "1Ω" } }
+    chip L { consumer { load i="1mA" } }
+    """)
+    assert codes(a, "error") == ["unconnected-input", "unconnected-input"]
+    a = run(tmp_path, """
+    net A
+    chip P { provider { out net=A v="5V" } }
+    chip O { oring { out net=A } }
+    """)
+    assert "needs at least one 'in' port" in a.diags.errors[0].message
