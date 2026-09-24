@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "powertree"
+version = "0.1.0"
+description = "Plain-text PCB power tree description, analysis and visualization"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[project.scripts]
+powertree = "powertree.cli:main"
+
+[tool.setuptools]
+packages = ["powertree"]
