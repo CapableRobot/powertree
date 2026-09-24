@@ -37,3 +37,16 @@ scenario idle {
     loads min
     set K:* on=#false
 }
+scenario peak {
+    loads max
+}
+
+// Used only when this file is analysed on its own; ignored when it is a board in rack.kdl.
+standalone {
+    chip TP1 desc="Bench supply on VIN" {
+        provider { out net=VIN_24V v="24V ±3%" imax="1A" }
+    }
+    scenario low-line {
+        set TP1 v="21.6V ±3%"          // 24V -10%
+    }
+}
