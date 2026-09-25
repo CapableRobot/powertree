@@ -298,7 +298,10 @@ def to_dot(a: Analysis, scenario: str, stack: bool = True, expand=(), collapse_b
         if chip.desc_template and "{n}" in chip.desc_template and cg.n > 1:
             nums = sorted({int(x.rsplit(":", 1)[1]) for x in rel if ":" in x})
             desc = chip.desc_template.replace("{n}", _runs(nums)) if nums else chip.desc
-        lines = [head] + ([desc] if desc else [])
+        if desc and not chip.part and len(desc.split()) == 1:
+            lines = [f"{head}  {desc}"]          # single-word description beside the designator
+        else:
+            lines = [head] + ([desc] if desc else [])
         heat_each = _rng([r.chip_heat[m] for m in cg.members], WATT)
         lines.append(f"heat {heat_each}" + (f" each, {fmt(chip_heat(cg.members), WATT)} total"
                                               if cg.n > 1 else ""))

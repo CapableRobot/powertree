@@ -17,7 +17,7 @@ def test_report_json(capsys):
 def test_dot_and_svg(tmp_path, capsys):
     assert main(["dot", os.path.join(EX, "ups.kdl"), "-s", "on-battery"]) == 0
     out = capsys.readouterr().out
-    assert out.startswith("digraph") and '"cluster_U3"' in out
+    assert out.startswith("digraph") and '"cluster_c:U3"' in out
     svg = tmp_path / "g.svg"
     import shutil
     if shutil.which("dot"):
