@@ -313,7 +313,9 @@ A stacked node shows:
 
 Stacked functions are drawn as 3-D boxes, stacked nets with a double outline, and stacked chip and board clusters with a bold border. Every label carries `×N`.
 
-Edges between stacks are labelled `per-instance ×count = total`.
+**Edge labels.** A net's voltage and current are in its bubble, so an edge only carries a current label where the bubble can't tell you: on the load edges of a net with several loads, and on the source edges of a net with several sources. A one-source, one-load net has unlabelled edges. Edges that stand for several stacked instances are labelled `per-instance ×count = total`. Edges carrying no current are dashed.
+
+**Unnamed nets** (created by `from=`) are not drawn. The source connects straight to its load(s), and the net's voltage and current can be read from those two nodes.
 
 | Option | Effect |
 |---|---|
@@ -325,7 +327,9 @@ Edges between stacks are labelled `per-instance ×count = total`.
 
 **Chain folding.** A chain is a run of function → net → function links where each net has one source and one load, and each function in the chain has one input and one output, e.g. fuse → sense resistor → reverse-protection FET → eFuse → buck. With `--wrap N`, each run of N functions becomes a row. The next row starts level with the first function of the chain and is placed beside the previous row, so the chain reads like lines of text instead of one long line.
 
-A folded chain is drawn inside its own invisible cluster. This keeps its rows next to each other, so the edge from the end of one row to the start of the next stays inside the chain's block instead of crossing the rest of the graph. That edge runs from the bottom of the last net in the row, through the gap between the rows, to the top border of the next row's chip.
+In a folded chain, each chip is drawn as a single node that looks like the chip box with its function inside, so the rows can be lined up column by column. The edge from the end of one row to the start of the next runs through the gap between the rows.
+
+Graphviz decides the final vertical order itself. So when Graphviz is available, `powertree dot` lays out a few equivalent variants and keeps the first whose rows come out in reading order and next to each other. If none does, it keeps rows together and turns the row-to-row edge round so it still runs through the gap. Without Graphviz (writing `.dot` only), the first variant is written unchecked.
 
 A chain ends at:
 - a branch (a net with several sources or loads, or a function with several inputs or outputs)

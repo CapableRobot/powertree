@@ -71,8 +71,12 @@ def main(argv: list[str] | None = None) -> int:
             print(scenario_text(an, res, summary=a.summary))
     if a.cmd == "dot" and an.results:
         name = a.scenario or next(iter(an.results))
+        layout = None
+        if a.wrap:
+            from .render import plain_layout
+            layout = plain_layout(a.dot)
         dot = to_dot(an, name, stack=not a.no_stack, expand=a.expand, collapse_boards=a.collapse_boards,
-                     wrap=a.wrap, rankdir=a.rankdir)
+                     wrap=a.wrap, rankdir=a.rankdir, layout=layout)
         if not a.output:
             print(dot)
         else:

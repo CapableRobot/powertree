@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
 
 ENV_VAR = "POWERTREE_DOT"
+_NODE_RE = re.compile(r'^node ("(?:[^"\\]|\\.)*"|\S+) (\S+) (\S+)', re.M)
 RASTER = {"png", "jpg", "jpeg", "gif", "bmp", "tif", "tiff", "webp"}
 FORMATS = RASTER | {"svg", "pdf", "eps", "ps"}
 
@@ -54,3 +56,30 @@ def render(dot_text: str, output: str, fmt: str, dpi: int | None = None, dot: st
     if proc.returncode != 0:
         msg = proc.stderr.decode("utf-8", "replace").strip()
         raise RenderError(f"Graphviz failed (exit {proc.returncode}): {msg}")
+
+
+def plain_layout(dot: str | None = None):
+    """Return a callable(dot_text) -> {node: (x, y)} using Graphviz -Tplain, or None if Graphviz
+    is not available."""
+    try:
+        exe = find_dot(dot)
+    except RenderError:
+        return None
+
+    def layout(text: str):
+        try:
+            proc = subprocess.run([exe, "-Tplain"], input=text.encode("utf-8"), capture_output=True,
+                                  timeout=120)
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        if proc.returncode != 0:
+            return None
+        pos = {}
+        # labels can span lines, so match only the start of each node record
+        for m in _NODE_RE.finditer(proc.stdout.decode("utf-8", "replace")):
+            name = m.group(1)
+            if name.startswith('"'):
+                name = name[1:-1].replace('\\"', '"').replace("\\\\", "\\")
+            pos[name] = (float(m.group(2)), float(m.group(3)))
+        return pos
+    return layout

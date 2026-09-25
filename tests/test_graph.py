@@ -114,9 +114,68 @@ chip L { consumer { in net=C; load i="1A" } }
     a = analyze(str(p))
     dot = to_dot(a, "nominal", wrap=2, rankdir="TB")
     assert "rankdir=TB" in dot
-    assert ('"f:Q.switch" -> "n:B" [label="1 A", dir=back, weight=0, tailport=n, headport=s, '
-            'ltail="cluster_c:Q"]') in dot
+    assert '"f:Q.switch" -> "n:B" [dir=back, weight=0, tailport=w, headport=e];' in dot
     assert '{ rank=same; "f:F.series" "f:Q.switch" }' in dot
+    dot = to_dot(a, "nominal", wrap=2)
+    assert '"f:Q.switch" -> "n:B" [dir=back, weight=0, tailport=n, headport=s];' in dot
+    assert '"f:Q.switch" [shape=plain' in dot            # chain chips are single nodes
     assert '"cluster_chain_0"' in dot and "compound=true" in dot
     assert '"n:VIN" -> "f:Q.switch" [style=invis]' in dot
     assert "constraint=false" not in to_dot(a, "nominal")
+
+
+def test_edge_labels_only_where_a_net_has_several_edges(tmp_path):
+    p = tmp_path / "d.kdl"
+    p.write_text("""design d
+net A
+net B
+chip P { provider { out net=A v="5V" } }
+chip S { switch { in net=A; out net=B; rdson "1mΩ" } }
+chip L1 { consumer { in net=B; load i="1A" } }
+chip L2 { consumer { in net=B; load i="2A" } }
+chip R { series { in net=A; r "1mΩ" } }
+chip L3 { consumer { in from=R; load i="3A" } }
+""")
+    dot = to_dot(analyze(str(p)), "nominal")
+    assert '"f:P.provider" -> "n:A";' in dot                     # single source: no label
+    assert '"n:A" -> "f:S.switch" [label="3 A"]' in dot          # A has two loads
+    assert '"f:S.switch" -> "n:B";' in dot
+    assert '"n:B" -> "f:L1.consumer" [label="1 A"]' in dot
+    # unnamed net: no bubble, direct edge, unlabelled (one load)
+    assert '"f:R.series" -> "f:L3.consumer";' in dot and "(direct)" not in dot
+
+
+def test_checked_layout_picks_variant(tmp_path):
+    from powertree.graph import _row_check
+    rows = [[["f:A", "n:1", "f:B"], ["f:C", "n:2"]]]
+    good = {"f:A": (0, 10), "n:1": (1, 10), "f:B": (2, 10), "f:C": (0, 8), "n:2": (1, 8)}
+    assert _row_check(rows, good, "LR") == (True, True)
+    flipped = {**good, "f:C": (0, 12), "n:2": (1, 12)}
+    assert _row_check(rows, flipped, "LR") == (False, True)
+    between = {**good, "f:X": (0, 9)}
+    assert _row_check(rows, between, "LR") == (True, False)
+
+    p = tmp_path / "d.kdl"
+    p.write_text("""design d
+net A
+net B
+net C
+chip J { provider { out net=A v="24V" } }
+chip F { series { in net=A; out net=B; r "1mΩ" } }
+chip R { series { in net=B; out net=C; r "1mΩ" } }
+chip L { consumer { in net=C; load i="1A" } }
+""")
+    a = analyze(str(p))
+    calls = []
+
+    def fake_layout(text):                      # every variant comes out upside down
+        calls.append(text)
+        import re
+        pos = {}
+        for i, name in enumerate(re.findall(r'^\s*"([fn]:[^"]+)" \[', text, re.M)):
+            pos[name] = (0.0 if name in ("f:J.provider", "f:R.series") else 1.0 + i,
+                         5.0 if name in ("f:R.series", "n:C", "f:L.consumer") else 1.0)
+        return pos
+    dot = to_dot(a, "nominal", wrap=2, layout=fake_layout)
+    assert len(calls) == 4                         # all variants tried
+    assert "tailport=s, headport=n" in dot         # rows reversed: return edge turned round
