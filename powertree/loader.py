@@ -486,7 +486,8 @@ class _Builder:
                     continue
                 flat = ctx.prefix + local
                 ctx.nets[local] = flat
-                d.nets[flat] = Net(flat, n.span, _conv(n, "desc", schema.STR))
+                d.nets[flat] = Net(flat, n.span, _conv(n, "desc", schema.STR),
+                                   template=base if k is not None else None, prefix=ctx.prefix, index=k)
         for pn in ports:
             pname, internal = str(pn.args[0].value), _conv(pn, "net", schema.NAME)
             if internal not in ctx.nets:
@@ -535,7 +536,8 @@ class _Builder:
                             n.span)
                 continue
             chip = Chip(ref, n.span, part_name, _tmpl(_conv(n, "desc", schema.STR), k, n.span, diags, "desc"),
-                        board=ctx.board.path if ctx.board else "")
+                        board=ctx.board.path if ctx.board else "",
+                        desc_template=_conv(n, "desc", schema.STR))
             if not fnodes:
                 diags.warning("empty-chip", f"chip {ref} has no power functions", n.span, ref)
             for fn in fnodes:

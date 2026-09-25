@@ -299,6 +299,28 @@ The rows from Converter loss through External consumers sum to Source output.
 - converter, switch, series, oring: P_in − P_out
 - provider: I²·r
 
+## Graph output
+
+`powertree dot` draws one scenario. Chips are drawn as clusters, boards as dashed clusters, and nets as ellipses. Edges carry currents, and findings colour the affected nodes: red for errors, orange for warnings.
+
+**Stacking.** Repeated instances are drawn once, as a stack. Instances of the same `count=` group stack when the scenario configures them the same way: same on/off state, same `set` overrides, same load level and same board scenario. The partition is coherent across the graph: if card `IO:1` runs a different scenario from `IO:2..4`, its fuse, harness net and contents split off with it. Computed values do not decide stacking, so the graph keeps the same shape across scenarios unless you configure instances differently.
+
+A stacked node shows:
+- per-instance values, marked "each", as a range when they differ by more than 1%
+- the total over every instance it represents (`total ×24: …`)
+- how many instances are off or unpowered
+- which instances have errors
+
+Stacked functions are drawn as 3-D boxes, stacked nets with a double outline, and stacked chip and board clusters with a bold border. Every label carries `×N`.
+
+Edges between stacks are labelled `per-instance ×count = total`.
+
+| Option | Effect |
+|---|---|
+| `--expand SEL` | draw matching instances separately, e.g. `--expand IO:2`; repeatable, selectors allowed |
+| `--no-stack` | draw every instance |
+| `--collapse-boards` | draw each top-level board (or stack of boards) as one box with its ports, heat and input power |
+
 ## Not yet implemented (planned)
 
 - KiCad netlist mode

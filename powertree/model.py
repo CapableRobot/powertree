@@ -98,6 +98,7 @@ class Chip:
     desc: str | None = None
     functions: dict[str, Function] = field(default_factory=dict)
     board: str = ""                # path of the enclosing board instance, "" at top level
+    desc_template: str | None = None   # desc before {n} substitution
 
 
 @dataclass
@@ -107,6 +108,9 @@ class Net:
     desc: str | None = None
     anonymous: bool = False
     port: str | None = None        # unbound top-level port name (board analysed standalone)
+    template: str | None = None    # "IO{n}_24V" for counted nets
+    prefix: str = ""               # board prefix of the design that declared it
+    index: int | None = None
     drivers: list[Port] = field(default_factory=list)
     sinks: list[Port] = field(default_factory=list)
 

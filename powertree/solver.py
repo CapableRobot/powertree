@@ -77,6 +77,7 @@ class Result:
     losses: dict[str, float] = field(default_factory=dict)      # heat by function kind (non-consumer)
     port_i: dict[str, float] = field(default_factory=dict)      # input port path -> current
     board_scenarios: dict[str, str] = field(default_factory=dict)
+    effective: Effective | None = None
 
     @property
     def system_efficiency(self) -> float | None:
@@ -436,7 +437,7 @@ def solve(d: Design, eff: Effective) -> Result:
     res = Result(sc, eff.loads, funcs, nets, chip_heat, source_power, load_power, offboard,
                  sum(chip_heat.values()), converged, iters, diags, losses,
                  {p.path: s.i_in[id(p)] for f in d.functions() for p in f.ins},
-                 dict(eff.board_scenarios))
+                 dict(eff.board_scenarios), eff)
     _checks(d, s, res)
     return res
 

@@ -10,7 +10,10 @@ powertree report examples/rack/rack.kdl --summary   # functions except consumers
 powertree report examples/rack/io-card.kdl -s peak+low-line   # one board on its own; a+b composes scenarios
 powertree report examples/ups.kdl --json            # machine-readable
 powertree dot    examples/ups.kdl -s on-battery -o ups.svg   # needs Graphviz for svg/png/pdf
-powertree dot    examples/ups.kdl -o ups.png --dpi 200       # raster resolution (default 200)
+powertree dot    examples/ups.kdl -o ups.png --dpi 300       # raster resolution (default 200)
+powertree dot    examples/rack/rack.kdl -s mostly-idle -o rack.svg                     # repeated instances stacked
+powertree dot    examples/rack/rack.kdl -s mostly-idle --collapse-boards -o rack.svg   # boards as boxes
+powertree dot    examples/rack/rack.kdl --expand IO:3 -o rack.svg   # or --no-stack
 powertree check  examples/rack/rack.kdl --lib corp=examples/lib   # boards, counts, library roots
 powertree schema                                    # every node/property, generated from the validator
 ```
@@ -20,7 +23,7 @@ powertree schema                                    # every node/property, gener
   - `sensor-board.kdl` — 12V → 5V → LDO/buck, part library
   - `ups.kdl` — adapter + battery, OR-ing, charger, harness, waiver
   - `rack/` — project file with a library root, a PSU feeding 4 counted `io-card` boards, board scenarios
-- `tests/` — `pytest` (100 tests, including a parity check against the `ckdl` reference parser when it is installed)
+- `tests/` — `pytest` (105 tests, including a parity check against the `ckdl` reference parser when it is installed)
 
 ## Code layout
 
@@ -34,7 +37,8 @@ powertree schema                                    # every node/property, gener
 | `scenario.py` | scenario inheritance |
 | `solver.py` | DC solve and electrical checks (layer 5) |
 | `units.py`, `expr.py` | quantities and the safe efficiency-expression language |
-| `analysis.py`, `report.py`, `cli.py` | pipeline runner, waivers, text/JSON/DOT output |
+| `analysis.py`, `report.py`, `cli.py` | pipeline runner, waivers, text/JSON output |
+| `graph.py`, `render.py` | Graphviz DOT with instance stacking; rendering via `dot` |
 
 ## Graphviz
 

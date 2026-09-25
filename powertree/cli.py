@@ -33,6 +33,11 @@ def main(argv: list[str] | None = None) -> int:
                                           "(default: DOT on stdout)")
     g.add_argument("-T", "--format", dest="fmt", help="output format if it differs from the extension")
     g.add_argument("--dpi", type=int, default=200, help="resolution for raster formats like PNG (default 200)")
+    g.add_argument("--no-stack", action="store_true", help="draw every instance separately")
+    g.add_argument("--expand", action="append", default=[], metavar="SELECTOR",
+                   help="draw these instances separately, e.g. IO:2 or IO:2..3 (repeatable)")
+    g.add_argument("--collapse-boards", action="store_true",
+                   help="draw each top-level board as a single box (ports, heat, power in)")
     g.add_argument("--dot", help="path to Graphviz dot(.exe) (default: $POWERTREE_DOT, then PATH)")
 
     for sp in (c, r, g):
@@ -62,7 +67,7 @@ def main(argv: list[str] | None = None) -> int:
             print(scenario_text(an, res, summary=a.summary))
     if a.cmd == "dot" and an.results:
         name = a.scenario or next(iter(an.results))
-        dot = to_dot(an, name)
+        dot = to_dot(an, name, stack=not a.no_stack, expand=a.expand, collapse_boards=a.collapse_boards)
         if not a.output:
             print(dot)
         else:
