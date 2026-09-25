@@ -186,7 +186,63 @@ def _names(members: list[str], limit: int = 4) -> str:
 # ---------------------------------------------------------------------------
 # DOT
 # ---------------------------------------------------------------------------
-def to_dot(a: Analysis, scenario: str, stack: bool = True, expand=(), collapse_boards: bool = False) -> str:
+def _fold_chains(edges: list[tuple[str, str]], wrap: int, level=None, solo=None):
+    """Find linear chains (function -> net -> function ... with single in/out links) longer than
+    `wrap` functions and fold them into rows.
+
+    level(node) -> key: nodes must share it to be chained (same board cluster).
+    solo(node) -> bool: a function whose chip also holds other functions cannot be chained,
+    because the chain is drawn inside its own cluster and clusters must nest.
+
+    Returns (edges to draw with constraint=false and ports, invisible anchor edges,
+    folded chains as (level, [function, net, function, ...]))."""
+    level = level or (lambda x: "")
+    solo = solo or (lambda x: True)
+    outs: dict[str, list[str]] = defaultdict(list)
+    ins: dict[str, list[str]] = defaultdict(list)
+    for a_, b_ in edges:
+        outs[a_].append(b_)
+        ins[b_].append(a_)
+
+    def is_net(x: str) -> bool:
+        return x.startswith("n:")
+
+    def step(f: str):
+        if len(outs[f]) != 1 or not solo(f):
+            return None
+        n = outs[f][0]
+        if not is_net(n) or len(ins[n]) != 1 or len(outs[n]) != 1:
+            return None
+        g = outs[n][0]
+        if len(ins[g]) != 1 or not solo(g) or not (level(f) == level(n) == level(g)):
+            return None
+        return n, g
+
+    nodes = {x for e in edges for x in e if not is_net(x)}
+    has_pred = {nx[1] for f in nodes if (nx := step(f))}
+    loose: set[tuple[str, str]] = set()
+    anchors: list[tuple[str, str]] = []
+    chains: list[tuple[object, list[str]]] = []
+    for head in sorted(nodes - has_pred):
+        chain, nets, f = [head], [], head
+        while (nx := step(f)) and nx[1] not in chain:
+            nets.append(nx[0])
+            chain.append(nx[1])
+            f = nx[1]
+        if wrap < 1 or len(chain) <= wrap:
+            continue
+        pred = ins[head][0] if ins[head] else None
+        for k in range(wrap, len(chain), wrap):
+            loose.add((nets[k - 1], chain[k]))          # the "carriage return" edge
+            if pred is not None:
+                anchors.append((pred, chain[k]))        # row starts level with the chain head
+        members = [x for pair in zip(chain, nets + [None]) for x in pair if x is not None]
+        chains.append((level(head), members))
+    return loose, anchors, chains
+
+
+def to_dot(a: Analysis, scenario: str, stack: bool = True, expand=(), collapse_boards: bool = False,
+           wrap: int = 0, rankdir: str = "LR") -> str:
     d, r = a.design, a.results[scenario]
     st = Stacks(a, scenario, stack, expand)
     bad = {f.target for f in a.diags.items
@@ -204,7 +260,7 @@ def to_dot(a: Analysis, scenario: str, stack: bool = True, expand=(), collapse_b
 
     title = (f"{d.name} — {scenario}  |  source {fmt(r.source_power, WATT)}, "
              f"heat {fmt(r.board_heat, WATT)}")
-    L = ["digraph power {", '  charset="UTF-8"; rankdir=LR; newrank=true; nodesep=0.25; ranksep=0.6;',
+    L = ["digraph power {", f'  charset="UTF-8"; rankdir={rankdir}; newrank=true; compound=true; nodesep=0.25; ranksep=0.6;',
          f'  fontname="{_FONT}"; bgcolor=white;',
          f"  label={_q(title)}; labelloc=t;",
          f'  node [fontname="{_FONT}", fontsize=10, shape=box, style="rounded,filled"];',
@@ -377,32 +433,6 @@ def to_dot(a: Analysis, scenario: str, stack: bool = True, expand=(), collapse_b
         L.append(f"{pad}{_q(g.id)} [shape={shape}, style=filled, fillcolor=\"#dfe9f5\", color={color}, "
                  f"penwidth={pen}, label={_q(chr(10).join(lines))}];")
 
-    def emit_level(parent_paths: set[str], pad: str) -> None:
-        """Emit boards, chips and nets whose parent board is in parent_paths ('' = top)."""
-        for bg in board_groups:
-            if _parent_board(bg.rep) not in parent_paths:
-                continue
-            if bg.rep in collapsed:
-                collapsed_node(bg, pad)
-                continue
-            lines = board_title(bg)
-            color, _ = status(bg.members)
-            style = ('style="rounded,dashed,bold"; penwidth=3;' if bg.n > 1 else
-                     'style="rounded,dashed";')
-            L.append(f"{pad}subgraph {_q('cluster_' + bg.id)} {{")
-            L.append(f"{pad}  label={_q(chr(10).join(lines))}; {style} "
-                     f"color={'red' if color == 'red' else 'steelblue'}; fontsize=11;")
-            emit_level(set(bg.members), pad + "  ")
-            L.append(f"{pad}}}")
-        for cg in chip_groups:
-            if d.chips[cg.rep].board in parent_paths:
-                chip_cluster(cg, pad)
-        for ng in net_groups:
-            if net_owner(ng.rep) in parent_paths:
-                net_node(ng, pad)
-
-    emit_level({""}, "  ")
-
     # -- edges ------------------------------------------------------------------
     agg: dict[tuple, list[float]] = defaultdict(list)
     per_board: dict[tuple, dict[str, float]] = defaultdict(lambda: defaultdict(float))
@@ -429,11 +459,102 @@ def to_dot(a: Analysis, scenario: str, stack: bool = True, expand=(), collapse_b
             agg[(ng.id, fg.id, p.direction)].append(cur)
     for key, per in per_board.items():
         agg[key].extend(per.values())
-    for (nid, fid, direction), vals in agg.items():
+    drawn = [((fid, nid) if direction == "out" else (nid, fid)) for (nid, fid, direction) in agg]
+
+    chip_group_of_func = {g.id: st.of[("c", _chip_of(g.rep))] for g in func_groups}
+    funcs_per_chip = defaultdict(int)
+    for g in func_groups:
+        funcs_per_chip[chip_group_of_func[g.id].id] += 1
+
+    def node_level(x: str):
+        if x.startswith("n:"):
+            owner = net_owner(x[2:])
+        elif x.startswith("f:"):
+            owner = d.chips[_chip_of(x[2:])].board
+        else:
+            return ("top",)
+        return st.of[("b", owner)].id if owner else ("top",)
+
+    def node_solo(x: str) -> bool:
+        return not x.startswith("f:") or funcs_per_chip[chip_group_of_func[x].id] == 1
+
+    loose, anchors, chains = _fold_chains(drawn, wrap, node_level, node_solo)
+    in_chain = {m for _, members in chains for m in members}
+
+    def chip_in_chain(cg: Group) -> bool:
+        return any(chip_group_of_func[g.id] is cg and g.id in in_chain for g in func_groups)
+
+    def level_paths(lvl) -> set[str]:
+        if lvl == ("top",):
+            return {""}
+        return set(next(g for g in board_groups if g.id == lvl).members)
+
+    def emit_level(parent_paths: set[str], pad: str) -> None:
+        """Emit boards, chips and nets whose parent board is in parent_paths ('' = top)."""
+        for bg in board_groups:
+            if _parent_board(bg.rep) not in parent_paths:
+                continue
+            if bg.rep in collapsed:
+                if bg.id not in in_chain:
+                    collapsed_node(bg, pad)
+                continue
+            lines = board_title(bg)
+            color, _ = status(bg.members)
+            style = ('style="rounded,dashed,bold"; penwidth=3;' if bg.n > 1 else
+                     'style="rounded,dashed";')
+            L.append(f"{pad}subgraph {_q('cluster_' + bg.id)} {{")
+            L.append(f"{pad}  label={_q(chr(10).join(lines))}; {style} "
+                     f"color={'red' if color == 'red' else 'steelblue'}; fontsize=11;")
+            emit_level(set(bg.members), pad + "  ")
+            L.append(f"{pad}}}")
+        for cg in chip_groups:
+            if d.chips[cg.rep].board in parent_paths and not chip_in_chain(cg):
+                chip_cluster(cg, pad)
+        for ng in net_groups:
+            if net_owner(ng.rep) in parent_paths and ng.id not in in_chain:
+                net_node(ng, pad)
+        for k, (lvl, members) in enumerate(chains):
+            if level_paths(lvl) != parent_paths:
+                continue
+            # a folded chain is kept together in its own invisible cluster, so its rows stay
+            # adjacent and the row-to-row edges do not cross the rest of the graph
+            L.append(f"{pad}subgraph {_q(f'cluster_chain_{k}')} {{")
+            L.append(f"{pad}  style=invis; label=\"\";")
+            for m in members:
+                if m.startswith("n:"):
+                    net_node(next(g for g in net_groups if g.id == m), pad + "  ")
+                elif m.startswith("f:"):
+                    chip_cluster(chip_group_of_func[m], pad + "  ")
+                else:
+                    collapsed_node(next(g for g in board_groups if g.id == m), pad + "  ")
+            L.append(f"{pad}}}")
+
+    emit_level({""}, "  ")
+
+    drawn = [((fid, nid) if direction == "out" else (nid, fid)) for (nid, fid, direction) in agg]
+    for ((nid, fid, direction), vals), (src, dst) in zip(agg.items(), drawn):
         total = sum(vals)
         label = fmt(total, AMP) if len(vals) == 1 else f"{_rng(vals, AMP)} ×{len(vals)} = {fmt(total, AMP)}"
         style = "" if total > 0 else ", style=dashed"
-        src, dst = (fid, nid) if direction == "out" else (nid, fid)
+        if (src, dst) in loose:
+            # The row-to-row edge is written reversed (next row -> net, drawn with dir=back) so
+            # Graphviz treats it as a normal forward edge and routes it through the gap between
+            # the rows; weight=0 stops it pulling the next row to the right. It runs from the
+            # bottom of the net to the top border of the next row's chip cluster.
+            extra = f"{style}, dir=back, weight=0, tailport=n, headport=s"
+            if dst.startswith("f:"):
+                extra += f", ltail={_q('cluster_' + chip_group_of_func[dst].id)}"
+            L.append(f"  {_q(dst)} -> {_q(src)} [label={_q(label)}{extra}];")
+            continue
         L.append(f"  {_q(src)} -> {_q(dst)} [label={_q(label)}{style}];")
+    for src, dst in anchors:
+        L.append(f"  {_q(src)} -> {_q(dst)} [style=invis];")
+    for _, members in chains:
+        # every row starts in the same rank as the chain's first function
+        row_starts = {d_ for _, d_ in loose}
+        starts = [m for m in members if m in row_starts]
+        if starts:
+            L.append("  { rank=same; " + " ".join(_q(x) for x in [members[0]] + starts) + " }")
+
     L.append("}")
     return "\n".join(L)

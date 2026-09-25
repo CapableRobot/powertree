@@ -14,6 +14,7 @@ powertree dot    examples/ups.kdl -o ups.png --dpi 300       # raster resolution
 powertree dot    examples/rack/rack.kdl -s mostly-idle -o rack.svg                     # repeated instances stacked
 powertree dot    examples/rack/rack.kdl -s mostly-idle --collapse-boards -o rack.svg   # boards as boxes
 powertree dot    examples/rack/rack.kdl --expand IO:3 -o rack.svg   # or --no-stack
+powertree dot    examples/ups.kdl --wrap 3 -o ups.svg              # fold long chains into rows of 3
 powertree check  examples/rack/rack.kdl --lib corp=examples/lib   # boards, counts, library roots
 powertree schema                                    # every node/property, generated from the validator
 ```
@@ -23,7 +24,7 @@ powertree schema                                    # every node/property, gener
   - `sensor-board.kdl` — 12V → 5V → LDO/buck, part library
   - `ups.kdl` — adapter + battery, OR-ing, charger, harness, waiver
   - `rack/` — project file with a library root, a PSU feeding 4 counted `io-card` boards, board scenarios
-- `tests/` — `pytest` (106 tests, including a parity check against the `ckdl` reference parser when it is installed)
+- `tests/` — `pytest` (107 tests, including a parity check against the `ckdl` reference parser when it is installed)
 
 ## Code layout
 

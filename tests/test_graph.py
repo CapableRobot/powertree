@@ -77,3 +77,46 @@ chip K count=2 desc="Relay" { consumer { in net=A; load i="1mA" } }
     assert 'label="U2  TPS1\neFuse\nheat' in dot
     assert 'label="U3\n5V buck\nheat' in dot
     assert 'label="K:1,2  ×2  Relay\nheat' in dot
+
+
+def test_fold_long_chains(tmp_path):
+    from powertree.graph import _fold_chains
+    edges = [("f:P", "n:0"), ("n:0", "f:A"), ("f:A", "n:1"), ("n:1", "f:B"), ("f:B", "n:2"),
+             ("n:2", "f:C"), ("f:C", "n:3"), ("n:3", "f:D"), ("f:D", "n:4"), ("n:4", "f:E")]
+    loose, anchors, chains = _fold_chains(edges, 2)
+    assert loose == {("n:1", "f:B"), ("n:3", "f:D")}
+    assert anchors == []                       # head is a source: later rows start at rank 0
+    assert chains == [("", ["f:P", "n:0", "f:A", "n:1", "f:B", "n:2", "f:C", "n:3", "f:D", "n:4", "f:E"])]
+    loose, _, chains = _fold_chains(edges, 0)
+    assert loose == set() and chains == []
+    # a branch ends the chain: n:1 feeding two functions is not a chain link
+    loose, _, _ = _fold_chains(edges + [("n:1", "f:X")], 2)
+    assert ("n:1", "f:B") not in loose
+    # a function that shares its chip with other functions, or sits in another board, ends it too
+    loose, _, _ = _fold_chains(edges, 2, solo=lambda x: x != "f:B")
+    assert ("n:1", "f:B") not in loose
+    loose, _, _ = _fold_chains(edges, 2, level=lambda x: "b" if x in ("n:3", "f:D", "n:4", "f:E") else "")
+    assert ("n:1", "f:B") in loose and ("n:3", "f:D") not in loose
+
+    p = tmp_path / "d.kdl"
+    p.write_text("""design d
+net VIN
+net A
+net B
+net C
+chip J { provider { out net=VIN v="24V" } }
+chip X { consumer { in net=VIN; load i="1mA" } }
+chip F { series { in net=VIN; out net=A; r "1mΩ" } }
+chip R { series { in net=A; out net=B; r "1mΩ" } }
+chip Q { switch { in net=B; out net=C; rdson "1mΩ" } }
+chip L { consumer { in net=C; load i="1A" } }
+""")
+    a = analyze(str(p))
+    dot = to_dot(a, "nominal", wrap=2, rankdir="TB")
+    assert "rankdir=TB" in dot
+    assert ('"f:Q.switch" -> "n:B" [label="1 A", dir=back, weight=0, tailport=n, headport=s, '
+            'ltail="cluster_c:Q"]') in dot
+    assert '{ rank=same; "f:F.series" "f:Q.switch" }' in dot
+    assert '"cluster_chain_0"' in dot and "compound=true" in dot
+    assert '"n:VIN" -> "f:Q.switch" [style=invis]' in dot
+    assert "constraint=false" not in to_dot(a, "nominal")

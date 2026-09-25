@@ -320,6 +320,19 @@ Edges between stacks are labelled `per-instance ×count = total`.
 | `--expand SEL` | draw matching instances separately, e.g. `--expand IO:2`; repeatable, selectors allowed |
 | `--no-stack` | draw every instance |
 | `--collapse-boards` | draw each top-level board (or stack of boards) as one box with its ports, heat and input power |
+| `--wrap N` | fold linear chains longer than N functions into rows of N (default 0: off) |
+| `--rankdir LR\|TB` | flow left-to-right (default) or top-to-bottom |
+
+**Chain folding.** A chain is a run of function → net → function links where each net has one source and one load, and each function in the chain has one input and one output, e.g. fuse → sense resistor → reverse-protection FET → eFuse → buck. With `--wrap N`, each run of N functions becomes a row. The next row starts level with the first function of the chain and is placed beside the previous row, so the chain reads like lines of text instead of one long line.
+
+A folded chain is drawn inside its own invisible cluster. This keeps its rows next to each other, so the edge from the end of one row to the start of the next stays inside the chain's block instead of crossing the rest of the graph. That edge runs from the bottom of the last net in the row, through the gap between the rows, to the top border of the next row's chip.
+
+A chain ends at:
+- a branch (a net with several sources or loads, or a function with several inputs or outputs)
+- a chip that also holds other functions, because clusters must nest
+- a board boundary
+
+Fan-outs are laid out as before.
 
 ## Not yet implemented (planned)
 
