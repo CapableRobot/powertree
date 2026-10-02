@@ -279,3 +279,146 @@ def test_output_limit_expression_errors(tmp_path):
 def test_output_limit_with_current(tmp_path):
     a = run(tmp_path, VLIM.format(vin="12V", lim="vin - 2Ω*iout"))
     assert a.results["nominal"].nets["V12"].v == pytest.approx(11.0)
+
+
+SCALED = """
+net V1P8
+chip P { provider { out net=V1P8 v="2V" } }
+chip U5 {
+    consumer vddpll {
+        in net=V1P8
+        load i="1mA" imax="2mA"
+        load i="4mA" imin="3mA" imax="7mA" per=PLL active=2 of=4
+        load p="10mW" pmax="20mW" per=lane of=8
+        load r="100Ω" per=term active=0 of=2
+    }
+}
+scenario nom
+scenario all { set U5.vddpll PLL=4 term=2 }
+scenario peak base=all { loads max }
+scenario peak2 { set U5.vddpll PLL=4 term=2; loads max }
+scenario low { loads min; set U5.vddpll PLL=0 lane=0 }
+"""
+
+
+def test_scaled_load_lines(tmp_path):
+    a = run(tmp_path, SCALED)
+    assert a.ok, a.diags.items
+    i = {k: r.funcs["U5.vddpll"].iin for k, r in a.results.items()}
+    assert i["nom"] == pytest.approx(1e-3 + 2 * 4e-3 + 10e-3 / 2)          # lane defaults to 1
+    assert i["all"] == pytest.approx(1e-3 + 4 * 4e-3 + 5e-3 + 2 * 2 / 100)  # 2 terminations in parallel
+    assert i["peak"] == pytest.approx(2e-3 + 4 * 7e-3 + 20e-3 / 2 + 2 * 2 / 100)
+    assert i["peak2"] == pytest.approx(i["peak"])                           # order inside a scenario is irrelevant
+    assert i["low"] == pytest.approx(1e-3)                                  # min of static line falls back to nom
+    assert a.results["all"].funcs["U5.vddpll"].active == [("PLL", 4, 4), ("lane", 1, 8), ("term", 2, 2)]
+
+
+def test_scaled_load_errors(tmp_path):
+    bad = [
+        ('load i="1mA" active=2', "needs per="),
+        ('load i="1mA" per=PLL active=5 of=4', "only 4 PLL"),
+        ('load i="1mA" per=i', "reserved"),
+        ('load i="1mA" per=PLL; load i="2mA" per=PLL', "two load lines"),
+        ('load i="1mA" offboard=#true; load i="2mA"', "offboard"),
+    ]
+    for loads, msg in bad:
+        a = run(tmp_path, f"""
+        net A
+        chip P {{ provider {{ out net=A v="5V" }} }}
+        chip U {{ consumer {{ in net=A; {loads} }} }}
+        """)
+        assert any(msg in f.message for f in a.diags.errors), loads
+    a = run(tmp_path, SCALED + "scenario x { set U5.vddpll PLL=9 }\nscenario y { set U5.vddpll PLLs=1 }\n")
+    msgs = " ".join(f.message for f in a.diags.errors)
+    assert "PLL=9 is out of range 0..4" in msgs and "did you mean 'PLL'" in msgs
+
+
+def test_scaled_load_note_in_outputs(tmp_path):
+    from powertree.graph import to_dot
+    from powertree.report import scenario_text
+    a = run(tmp_path, SCALED)
+    assert "4/4 PLL, 1/8 lane, 2/2 term" in to_dot(a, "all")
+    assert "2/4 PLL, 1/8 lane, 0/2 term" in scenario_text(a, a.results["nom"])
+
+
+def test_load_line_labels_and_output(tmp_path):
+    from powertree.graph import to_dot
+    from powertree.report import scenario_text, to_json
+    import json
+    a = run(tmp_path, """
+    net V
+    chip P { provider { out net=V v="1V" } }
+    chip U {
+        consumer VDDA11 {
+            in net=V
+            load i="32mA" imax="36mA" desc="TX"
+            load i="8.5mA" imax="17mA" per=SPE active=3 of=6
+            load i="1mA" desc="OSC"
+            load p="2mW" per=PLL desc="PLL core" active=2
+            load i="5mA"
+        }
+    }
+    scenario nom
+    scenario off { set U SPE=0 }
+    scenario forced { set U i="1A" }
+    """)
+    assert a.ok, a.diags.items
+    r = a.results["nom"]
+    lines = r.funcs["U.VDDA11"].lines
+    assert [x[0] for x in lines] == ["TX", "SPE", "OSC", "PLL core (PLL)", "load 5"]
+    assert lines[1][1:] == (3, 6, pytest.approx(25.5e-3), pytest.approx(25.5e-3))
+    assert lines[3][1:3] == (2, None) and lines[3][3] == pytest.approx(4e-3)
+    assert sum(x[3] for x in lines) == pytest.approx(r.funcs["U.VDDA11"].iin)
+    assert a.results["off"].funcs["U.VDDA11"].lines[1][3] == 0
+    assert a.results["forced"].funcs["U.VDDA11"].lines == [("scenario override", None, None, 1.0, 1.0)]
+    text = scenario_text(a, r, load_lines=True)
+    assert "Load line" in text and "SPE" in text and "3/6" in text
+    assert "Load line" not in scenario_text(a, r)
+    dot = to_dot(a, "nom", load_lines=True)
+    # several lines: an embedded table of name, current and power
+    assert "<B>Load</B>" in dot and "<B>Current</B>" in dot and "<B>Power</B>" in dot and "Heat" not in dot
+    assert '<TD ALIGN="LEFT">SPE 3/6</TD><TD ALIGN="RIGHT">25.5 mA</TD><TD ALIGN="RIGHT">25.5 mW</TD>' in dot
+    assert '<TD ALIGN="LEFT">PLL core (PLL) ×2</TD>' in dot
+    assert "<B>Load</B>" not in to_dot(a, "nom")
+    data = json.loads(to_json(a))
+    assert data["results"]["nom"]["functions"]["U.VDDA11"]["load_lines"][0]["label"] == "TX"
+
+
+def test_single_unnamed_load_line_has_blank_label(tmp_path):
+    from powertree.report import scenario_text
+    from powertree.solver import line_text
+    a = run(tmp_path, """
+    net V
+    chip P { provider { out net=V v="1V" } }
+    chip U { consumer { in net=V; load i="5mA" } }
+    """)
+    line = a.results["nominal"].funcs["U.consumer"].lines[0]
+    assert line[0] == ""
+    assert line_text(line) == "5 mA  5 mW"
+    row = next(l for l in scenario_text(a, a.results["nominal"], load_lines=True).splitlines()
+               if l.startswith("U.consumer") and "5 mW" in l)
+    assert "load" not in row
+
+
+def test_load_line_table_offboard_and_single_line_text(tmp_path):
+    from powertree.graph import to_dot
+    a = run(tmp_path, """
+    net V
+    chip P { provider { out net=V v="1V" } }
+    chip U { consumer { in net=V; load i="5mA" desc="a" offboard=#true; load i="1mA" desc="b" offboard=#true } }
+    chip W { consumer { in net=V; load i="2mA" desc="only" } }
+    """)
+    dot = to_dot(a, "nominal", load_lines=True)
+    assert '<TD ALIGN="LEFT">a</TD><TD ALIGN="RIGHT">5 mA</TD><TD ALIGN="RIGHT">5 mW</TD>' in dot
+    assert "only" not in dot                         # a single plain line repeats the summary: omitted
+    b = run(tmp_path, """
+    net V
+    chip P { provider { out net=V v="1V" } }
+    chip S { consumer { in net=V; load i="2mA" per=SPE active=3 of=6 } }
+    chip T { consumer { in net=V; load i="2mA" desc="TX" } }
+    scenario nom
+    scenario ovr { set T i="5mA" }
+    """)
+    assert "SPE 3/6" in to_dot(b, "nom", load_lines=True) and "6 mA  6 mW" in to_dot(b, "nom", load_lines=True)
+    assert "TX" not in to_dot(b, "nom", load_lines=True)
+    assert "scenario override" in to_dot(b, "ovr", load_lines=True)

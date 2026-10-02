@@ -24,6 +24,7 @@ SETTABLE: dict[str, dict[str, object]] = {
     "converter": {"v": schema.VSPEC},
     "board": {"scenario": schema.NAME, "on": schema.BOOL},
 }
+RESERVED_LOAD_NAMES = {"i", "p", "r", "on"}
 _BAD_REF_CHARS = re.compile(r"[.:{}]")
 
 
@@ -304,7 +305,26 @@ def _build_load(n: Node, f: Function, diags: Diagnostics) -> Load | None:
         diags.error("load-model", f"{f.path}: load needs {m}min <= {m} <= {m}max", n.span, f.path)
     if m == "r" and nom <= 0:
         diags.error("load-model", f"{f.path}: load resistance must be > 0", n.span, f.path)
-    return Load(m, nom, lo, hi, _conv(n, "offboard", schema.BOOL, False), n.span)
+    per = _conv(n, "per", schema.NAME)
+    active = _conv(n, "active", schema.INT)
+    of = _conv(n, "of", schema.INT)
+    if (active is not None or of is not None) and per is None:
+        diags.error("load-model", f"{f.path}: a scaled load line needs per=<element name> "
+                                  f"(e.g. per=PLL) so it can be labelled and set in scenarios", n.span, f.path)
+    if per is not None and per in RESERVED_LOAD_NAMES:
+        diags.error("load-model", f"{f.path}: per={per} is reserved; choose another element name",
+                    n.prop_spans["per"], f.path)
+    if of is not None and of < 1:
+        diags.error("bad-value", f"{f.path}: of= must be at least 1", n.prop_spans["of"], f.path)
+    if active is None:
+        active = 1
+    if active < 0:
+        diags.error("bad-value", f"{f.path}: active= cannot be negative", n.prop_spans["active"], f.path)
+    elif of is not None and active > of:
+        diags.error("active-range", f"{f.path}: active={active} but the chip has only {of} {per}",
+                    n.prop_spans.get("active", n.span), f.path)
+    return Load(m, nom, lo, hi, _conv(n, "offboard", schema.BOOL, False), n.span, per, active, of,
+                _conv(n, "desc", schema.STR))
 
 
 def _build_function(fn: Node, chip: Chip, diags: Diagnostics) -> Function:
@@ -390,11 +410,19 @@ def _build_function(fn: Node, chip: Chip, diags: Diagnostics) -> Function:
         f.vf = one("vf", schema.V) or 0.0
         f.r = one("r", schema.OHM) or 0.0
     if f.kind == "consumer":
-        ln = fn.child("load")
-        if ln is None:
+        lns = fn.children_named("load")
+        if not lns:
             diags.error("missing-load", f"consumer {f.path} needs a load", fn.span, f.path)
-        else:
-            f.load = _build_load(ln, f, diags)
+        for ln in lns:
+            ld = _build_load(ln, f, diags)
+            if ld is None:
+                continue
+            if ld.per is not None and any(o.per == ld.per for o in f.loads):
+                diags.error("load-model", f"{f.path}: two load lines with per={ld.per}", ln.span, f.path)
+            f.loads.append(ld)
+        if len({ld.offboard for ld in f.loads}) > 1:
+            diags.error("load-model", f"{f.path}: offboard= must be the same on all load lines",
+                        fn.span, f.path)
     return f
 
 
@@ -702,7 +730,8 @@ def _resolve_set(d: Design, s: ScenarioDef, cands, diags: Diagnostics) -> None:
             elif kind == "chip":
                 allowed = SETTABLE["*"]
             else:
-                allowed = {**SETTABLE["*"], **SETTABLE.get(obj.kind, {})}
+                allowed = {**SETTABLE["*"], **SETTABLE.get(obj.kind, {}),
+                           **{ld.per: schema.INT for ld in obj.loads if ld.per}}
             what = {"board": "a board", "chip": "a multi-function chip"}.get(kind, f"a {getattr(obj, 'kind', '')}")
             vals: dict[str, Any] = {}
             for k, v in props.items():
@@ -714,6 +743,15 @@ def _resolve_set(d: Design, s: ScenarioDef, cands, diags: Diagnostics) -> None:
                     vals[k] = schema.convert(v, allowed[k])
                 except ValueError as e:
                     err("bad-value", k, f"'{k}' {e}", spans[k])
+            if kind == "function" and obj.kind == "consumer":
+                for ld in obj.loads:
+                    if ld.per in vals:
+                        n = vals[ld.per]
+                        if n < 0 or (ld.of is not None and n > ld.of):
+                            err("active-range", ld.per,
+                                f"{ld.per}={n} is out of range 0..{ld.of if ld.of is not None else '∞'}",
+                                spans[ld.per])
+                            vals.pop(ld.per)
             if kind == "board":
                 if "scenario" in vals:
                     if vals["scenario"] not in obj.scenarios:

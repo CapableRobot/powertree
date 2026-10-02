@@ -59,6 +59,10 @@ class Load:
     max: float
     offboard: bool = False
     span: Span | None = None
+    per: str | None = None         # element name, e.g. "PLL"; makes the line scalable by scenarios
+    active: int = 1                # enabled elements; the line draws active x its value
+    of: int | None = None          # elements the chip has (upper bound for active)
+    desc: str | None = None        # label for per-line output, e.g. "TX"
 
 
 @dataclass
@@ -79,7 +83,7 @@ class Function:
     dropout_at: float | None = None
     r: float = 0.0                 # rdson / series r / source r / oring r
     vf: float = 0.0
-    load: Load | None = None
+    loads: list[Load] = field(default_factory=list)   # consumer load lines, summed
 
     @property
     def path(self) -> str:

@@ -1,0 +1,142 @@
+design usbhub2 desc="Capable Robot USB Hub"
+
+net VIN
+net VLIM
+net V5
+net V3P3
+net VBUS1
+net VBUS2
+net VBUS3
+net VBUS4
+
+chip SUPPLY desc="24V wall adapter" {
+    provider { out net=VIN v="24V ±3%" imax="1.5A" }
+}
+
+chip RSENSE desc="Current sense resistor" {
+    series { in net=VIN; r "10mΩ" }
+}
+
+chip Q2 desc="SI4435DDY-T1-GE3" {
+	switch pch { 
+		in from=RSENSE.series.out
+		out imax="4.1A"
+		rdson "0.035Ω" 
+	}
+}
+
+chip Q1 desc="IRLR2908TRLPBF" {
+	switch nch {
+		in from=Q2.pch.out
+		out net=VLIM imax="30A"
+		rdson "28mΩ"
+	}
+}
+
+chip U6 desc="MIC45205" {
+	converter buck kind=buck {
+		in  net=VLIM range="4.5V..26V"
+        out net=V5 v="5.1V ±1%" imax="6A" vlim="max(0.8V, 0.85*vin)"
+        iq "3mA"
+        eff "96%"
+	}
+}
+
+chip U7 desc="MCP1825-3v3" {
+	converter ldo kind=linear {
+		in  net=V5 range="2.1V..6V"
+        out net=V3P3 v="3.3V ±0.5%" imax="500mA"
+        dropout "210mV" at="500mA"
+        iq "120uA"
+	}
+}
+
+chip U1 desc="USB4715" {
+	consumer vdd { 
+		in net=V3P3 v="3.3V ±10%"
+		load i="67mA" imin="4mA" imax="167mA" 
+	}
+}
+
+chip U5 desc="ATSAMD51G" {
+	consumer vdd { 
+		in net=V3P3 v="3.3V ±10%"
+		load i="1mA" imin="1mA" imax="3.5mA" 
+	}
+}
+
+part UCS2113 desc="USB Port Power Switch" { 
+	consumer vdd {
+		in range="2.9V..5.5V"
+		load i="700uA"
+	}
+	switch a {
+		out imax="3A"
+		rdson "40mΩ"
+	}
+	switch b {
+		out imax="3A"
+		rdson "40mΩ"
+	}
+}
+
+part TS3USB31 desc="USB Data Disconnect" {
+	consumer vdd {
+		in net=V3P3 v="3V..4V"
+		load i="1uA"
+	}
+}
+
+chip U count=5 part=TS3USB31 desc="USB Data Disconnect {n}" { }
+
+chip TUSB212 desc="USB Signal Conditioner" { 
+	consumer vdd {
+		in net=V3P3 v="3.3V ±10%"
+		load i="22mA" imax="30mA" imin="14mA"
+	}
+}
+
+part TLC5916 desc="LED Driver" {
+	consumer vdd { in net=V3P3 v="3V..5V"; load i="37mA" }
+}
+
+part CLMVCFKA desc="RGB LED" {
+	consumer rgb { in net="V5"; load i="20mA" }
+}
+
+chip LED count=10 part=CLMVCFKA desc="RGB LED {n}" { }
+
+chip U8 part=TLC5916 {}
+chip U9 part=TLC5916 {}
+
+chip U2 part=UCS2113 {
+	consumer vdd { in net=V3P3 }
+	switch a { in net=V5; out net=VBUS1 }
+	switch b { in net=V5; out net=VBUS2 }
+}
+
+chip U3 part=UCS2113 {
+	consumer vdd { in net=V3P3 }
+	switch a { in net=V5; out net=VBUS3 }
+	switch b { in net=V5; out net=VBUS4 }
+}
+
+chip J1 desc="Port 1" {
+	consumer usb { in net=VBUS1; load p="10W" offboard=#true }
+}
+
+chip J2 desc="Port 2" {
+	consumer usb { in net=VBUS2; load p="5W" offboard=#true }
+}
+
+chip J3 desc="Port 3" {
+	consumer usb { in net=VBUS3; load p="5W" offboard=#true }
+}
+
+chip J4 desc="Port 4" {
+	consumer usb { in net=VBUS4; load p="5W" offboard=#true }
+}
+
+
+scenario active desc="Nominal operation"
+scenario peak base=active { loads max }

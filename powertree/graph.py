@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from . import paths
 from .analysis import Analysis
 from .paths import group_key
+from .solver import active_note
 from .units import AMP, VOLT, WATT, fmt, pct
 
 _FILL = {"provider": "#d9ead3", "converter": "#cfe2f3", "switch": "#fff2cc", "series": "#eeeeee",
@@ -177,6 +178,14 @@ def _rng(values: list[float | None], dim) -> str:
     return f"{fmt(lo, dim)}–{fmt(hi, dim)}"
 
 
+def _esc(x: str) -> str:
+    return x.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _html_lines(ls: list[str]) -> str:
+    return "<BR/>".join(_esc(x) for x in ls)
+
+
 def _names(members: list[str], limit: int = 4) -> str:
     short = [m.rsplit(".", 1)[-1] if "." in m else m for m in members]
     s = ", ".join(short[:limit])
@@ -249,7 +258,8 @@ _PORTS = {"LR": ("n", "s"), "RL": ("n", "s"), "TB": ("w", "e"), "BT": ("w", "e")
 
 
 def to_dot(a: Analysis, scenario: str, stack: bool = True, expand=(), collapse_boards: bool = False,
-           wrap: int = 0, rankdir: str = "LR", layout=None, _variant=(True, False, False),
+           wrap: int = 0, rankdir: str = "LR", layout=None, load_lines: bool = False,
+           _variant=(True, False, False),
            _meta: dict | None = None) -> str:
     """DOT text for one scenario.
 
@@ -258,7 +268,7 @@ def to_dot(a: Analysis, scenario: str, stack: bool = True, expand=(), collapse_b
     out in order and next to each other is returned, since Graphviz's node ordering can't be
     forced directly."""
     if layout is not None and wrap:
-        return _checked(a, scenario, stack, expand, collapse_boards, wrap, rankdir, layout)
+        return _checked(a, scenario, stack, expand, collapse_boards, wrap, rankdir, layout, load_lines)
     use_cluster, reverse_decl, swap_ports = _variant
     d, r = a.design, a.results[scenario]
     st = Stacks(a, scenario, stack, expand)
@@ -319,9 +329,26 @@ def to_dot(a: Analysis, scenario: str, stack: bool = True, expand=(), collapse_b
         kind = f.kind + (f"/{f.subkind}" if f.subkind else "")
         lines = [kind if f.name == f.kind else f"{f.name}  ({kind})"]
         each = "  each" if g.n > 1 else ""
+        table, table_at = None, 0
         if f.kind == "consumer":
             lines.append(f"{_rng([x.vin for x in frs], VOLT)}  {_rng([x.iin for x in frs], AMP)}  "
                          f"{_rng([x.pin for x in frs], WATT)}{each}")
+            if load_lines and len(frs[0].lines) > 1:
+                # several lines: a small table (name, current, power) goes here in the label
+                table = [(f"{lb}" + ("" if n is None else (f" {n}/{of}" if of is not None else f" ×{n}")),
+                          fmt(i_, AMP), fmt(pw, WATT))
+                         for lb, n, of, i_, pw in frs[0].lines]
+                table_at = len(lines)
+            elif load_lines and frs[0].lines:
+                # A single line's current and power equal the summary, so only a label that adds
+                # something is shown: a scaled line's name and count, or a scenario override.
+                lb, n, of, _i, _p = frs[0].lines[0]
+                if n is not None:
+                    lines.append(f"{lb} {n}/{of}" if of is not None else f"{lb} ×{n}")
+                elif lb == "scenario override":
+                    lines.append(lb)
+            elif frs[0].active:
+                lines.append(active_note(frs[0].active))
         elif f.kind == "provider":
             lines.append(f"{_rng([x.vout for x in frs], VOLT)}  {_rng([x.iout for x in frs], AMP)}{each}")
         else:
@@ -355,13 +382,32 @@ def to_dot(a: Analysis, scenario: str, stack: bool = True, expand=(), collapse_b
             lines.append(f"errors: {_names([_chip_of(e) for e in errs])}")
         powered = any(x.powered for x in frs)
         fill = _FILL[f.kind] if powered else "#f3f3f3"
-        return lines, fill, color
+        return lines, fill, color, table, table_at, g.n > 1
+
+    def func_body(parts) -> str:
+        """HTML for a function's text, with the load-line table embedded where it belongs."""
+        lines, _fill, _color, table, at, stacked = parts
+        if table is None:
+            return _html_lines(lines)
+        head = ("Load", "Current each" if stacked else "Current", "Power each" if stacked else "Power")
+        rows = "".join(
+            f'<TR><TD ALIGN="LEFT">{_esc(a_)}</TD><TD ALIGN="RIGHT">{_esc(b_)}</TD>'
+            f'<TD ALIGN="RIGHT">{_esc(c_)}</TD></TR>' for a_, b_, c_ in table)
+        tbl = (f'<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="2" COLOR="gray55">'
+               f'<TR><TD ALIGN="LEFT"><B>{head[0]}</B></TD><TD ALIGN="RIGHT"><B>{head[1]}</B></TD>'
+               f'<TD ALIGN="RIGHT"><B>{head[2]}</B></TD></TR>{rows}</TABLE>')
+        cells = [f"<TR><TD>{_html_lines(lines[:at])}</TD></TR>", f"<TR><TD>{tbl}</TD></TR>"]
+        if lines[at:]:
+            cells.append(f"<TR><TD>{_html_lines(lines[at:])}</TD></TR>")
+        return f'<TABLE BORDER="0" CELLBORDER="0" CELLSPACING="2" CELLPADDING="0">{"".join(cells)}</TABLE>'
 
     def func_node(g: Group, pad: str) -> None:
-        lines, fill, color = func_parts(g)
+        parts = func_parts(g)
+        lines, fill, color, table = parts[:4]
         pen = 2.5 if color != "gray30" else 1
         shape = ', shape=box3d, style="filled"' if g.n > 1 else ""
-        L.append(f"{pad}{_q(g.id)} [label={_q(chr(10).join(lines))}, fillcolor={_q(fill)}, "
+        label = f"<{func_body(parts)}>" if table is not None else _q(chr(10).join(lines))
+        L.append(f"{pad}{_q(g.id)} [label={label}, fillcolor={_q(fill)}, "
                  f"color={color}, penwidth={pen}{shape}];")
 
     def chip_title(cg: Group) -> list[str]:
@@ -405,7 +451,8 @@ def to_dot(a: Analysis, scenario: str, stack: bool = True, expand=(), collapse_b
         the chain's rows in order."""
         cg = st.of[("c", _chip_of(fg.rep))]
         title = chip_title(cg)
-        lines, fill, color = func_parts(fg)
+        parts = func_parts(fg)
+        lines, fill, color = parts[:3]
 
         def html(ls):
             return "<BR/>".join(x.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;") for x in ls)
@@ -415,7 +462,7 @@ def to_dot(a: Analysis, scenario: str, stack: bool = True, expand=(), collapse_b
         label = (f'<<TABLE STYLE="rounded" {outer} CELLBORDER="0" CELLSPACING="6" CELLPADDING="1">'
                  f'<TR><TD>{html(title)}</TD></TR>'
                  f'<TR><TD BORDER="{inner_border}" COLOR="{color}" BGCOLOR="{fill}" CELLPADDING="5">'
-                 f'{html(lines)}</TD></TR></TABLE>>')
+                 f'{func_body(parts)}</TD></TR></TABLE>>')
         L.append(f"{pad}{_q(fg.id)} [shape=plain, style=\"\", label={label}];")
 
     # -- nets -------------------------------------------------------------------
@@ -669,8 +716,9 @@ def _row_check(rows_per_chain, pos, rankdir: str) -> tuple[bool, bool]:
     return in_order, adjacent
 
 
-def _checked(a, scenario, stack, expand, collapse_boards, wrap, rankdir, layout) -> str:
-    kw = dict(stack=stack, expand=expand, collapse_boards=collapse_boards, wrap=wrap, rankdir=rankdir)
+def _checked(a, scenario, stack, expand, collapse_boards, wrap, rankdir, layout, load_lines) -> str:
+    kw = dict(stack=stack, expand=expand, collapse_boards=collapse_boards, wrap=wrap, rankdir=rankdir,
+              load_lines=load_lines)
     tried = []
     for variant in ((True, False), (False, False), (True, True), (False, True)):
         meta: dict = {}

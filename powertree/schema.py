@@ -161,10 +161,11 @@ EFF = Spec("Efficiency: constant (eff 0.9), expression (eff expr=...), or datash
            children={"point": Spec("One efficiency curve point.",
                                     props={"iout": A, "eff": RATIO}, required=("iout", "eff"))})
 
-LOAD = Spec("Load model: i= (constant current), p= (constant power) or r= (resistive). "
-            "*min/*max give scenario bounds.",
+LOAD = Spec("Load line: i= (constant current), p= (constant power) or r= (resistive); *min/*max give "
+            "scenario bounds. A consumer may have several load lines, which add up. per=NAME active=N "
+            "of=M scales a line by the number of enabled elements (e.g. per enabled PLL).",
             props={"i": A, "imin": A, "imax": A, "p": W, "pmin": W, "pmax": W,
-                   "r": OHM, "offboard": BOOL})
+                   "r": OHM, "offboard": BOOL, "per": NAME, "active": INT, "of": INT, "desc": STR})
 
 FUNCTIONS = {
     "provider": Spec("Power source (adapter, battery, upstream board).", **_name_arg,

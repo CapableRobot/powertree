@@ -6,7 +6,7 @@ import os
 
 from .analysis import Analysis
 from .diagnostics import Diagnostics
-from .solver import Result
+from .solver import Result, active_note
 from .paths import group_key
 from .units import AMP, VOLT, WATT, fmt, pct
 
@@ -62,7 +62,7 @@ def _board_power(r: Result, d, b) -> float:
     return p
 
 
-def scenario_text(a: Analysis, r: Result, summary: bool = False) -> str:
+def scenario_text(a: Analysis, r: Result, summary: bool = False, load_lines: bool = False) -> str:
     """Full report, or with summary=True: functions except consumers, and the Board, Group and Power tables."""
     d = a.design
     out = [f"=== {d.name} — scenario '{r.scenario}' (loads {r.loads}) "
@@ -92,6 +92,8 @@ def scenario_text(a: Analysis, r: Result, summary: bool = False) -> str:
             continue
         kind = f.kind + (f"/{f.subkind}" if f.subkind else "")
         state = "off" if not fr.on else ("unpowered" if not fr.powered else "")
+        if fr.active:
+            state = ", ".join(x for x in (state, active_note(fr.active)) if x)
         rows.append([path, kind,
                      fmt(fr.vin, VOLT) if fr.vin is not None else "",
                      fmt(fr.vout, VOLT) if fr.vout is not None else "",
@@ -103,6 +105,15 @@ def scenario_text(a: Analysis, r: Result, summary: bool = False) -> str:
                      state])
     out += _table(["Function", "Kind", "Vin", "Vout", "Iin", "Iout", "Eff", "Heat", "Load%", "State"],
                   rows, {2, 3, 4, 5, 6, 7, 8}) + [""]
+
+    if load_lines:
+        rows = []
+        for path, fr in r.funcs.items():
+            for label, n, of, i, p in fr.lines:
+                count = "" if n is None else (f"{n}/{of}" if of is not None else str(n))
+                rows.append([path, label, count, fmt(i, AMP), fmt(p, WATT)])
+        if rows:
+            out += _table(["Consumer", "Load line", "Active", "Current", "Power"], rows, {2, 3, 4}) + [""]
 
     if not summary:
         rows = []
@@ -195,7 +206,10 @@ def to_json(a: Analysis) -> str:
                               "on": fr.on, "powered": fr.powered, "vin": fr.vin, "vout": fr.vout,
                               "iin": fr.iin, "iout": fr.iout, "pin": fr.pin, "pout": fr.pout,
                               "heat": fr.heat, "eff": fr.eff, "loading": fr.loading, "imax": fr.imax,
-                              "offboard": fr.offboard}
+                              "offboard": fr.offboard,
+                              "active": {per: {"enabled": n, "of": of} for per, n, of in fr.active},
+                              "load_lines": [{"label": lb, "active": n, "of": of, "current": i, "power": pw}
+                                             for lb, n, of, i, pw in fr.lines]}
                           for p, fr in r.funcs.items()},
             "chip_heat": r.chip_heat,
             "board_scenarios": r.board_scenarios,

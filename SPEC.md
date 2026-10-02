@@ -99,6 +99,35 @@ load i="100mA" offboard=#true             // power leaves the board: not counted
 
 A missing min or max falls back to the nominal value.
 
+**Several load lines, and lines that scale with enabled elements.** A consumer may have any number of `load` lines; its draw is their sum, and each line has its own model, so a static current can sit beside a per-lane power. A line with `per=` is scaled by how many of those elements are enabled:
+
+```kdl
+consumer vddpll {
+    in net=V1P8 range="1.71V..1.89V"
+    load i="1.2mA" imax="2mA"                         // static, always drawn
+    load i="4mA" imax="7mA" per=PLL active=2 of=4     // per enabled PLL
+    load p="10mW" pmax="15mW" per=lane of=8           // per enabled lane (active defaults to 1)
+}
+```
+
+How a scaled line works:
+- **Draw.** A line draws `active ×` its value at the scenario's load level: `active × i`, `active × p`, or `active` resistors of `r` in parallel.
+- **Bounds.** `active` defaults to 1 and may be 0. `of=` is how many elements the chip has; a larger `active` is an `active-range` error.
+- **Naming.** `per=` is required when `active=` or `of=` is given, must be unique within the consumer, and cannot be `i`, `p`, `r` or `on`.
+- **Shared settings.** All lines must agree on `offboard`.
+
+**Labels.** `desc=` names any load line, scaled or not, e.g. `load i="32mA" imax="36mA" desc="TX"`.
+
+**Output.** By default only the summed draw is shown, and the report's State column and the graph show the counts as `2/4 PLL, 1/8 lane`.
+
+With `--load-lines` (on `report` and `dot`), each line is listed with its current and power:
+- **Report:** a Load line table is added.
+- **Graph:** a consumer with several lines gets a small table in its box (load, current, power; "each" for stacks). A consumer with a single line shows no numbers for it, since they equal the summary. It shows only a label that adds something: a scaled line's name and count (`SPE 3/6`), or `scenario override`.
+- **Line names:** a line is named by its `desc`, else its `per` name, else `load N`. With both, the name is `desc (per)`. A consumer whose only line has no name gets a blank name.
+- **JSON:** the per-line values are always included.
+
+These are counts of elements within one consumer on one net, unlike `count=`, which creates separate chips.
+
 ### Linking
 
 `in net=NAME` connects a port to a named net.
@@ -222,11 +251,13 @@ scenario night base="active, low-power" {
 
 **What `set` can change:**
 - any function: `on`
-- consumer: `i`, `p`, `r` (overrides the load level for that consumer)
+- consumer: `i`, `p`, `r`, which replace all of the consumer's load lines with that one load; or `<per name>=N`, which sets the enabled count of a scaled line, e.g. `set U5.vddpll PLL=4 lane=0`
 - provider: `v`, `imax`
 - converter: `v`
 - chip with several functions: `on` only, applied to all its functions
 - board: `scenario=<name>`, which applies the board's own scenario scoped to that board, and `on`, which turns off everything on the board
+
+**Load level and counts are independent.** `loads min|nom|max` picks each line's per-element value; it never changes `active`. Within one scenario the order of `loads` and `set` lines does not matter for that reason. The order does matter only when two `set` lines change the same property, where the later one wins.
 
 **Load levels are scoped.** A board scenario's `loads` applies only inside that board. Otherwise `loads` lines apply in order, and the last one covering a function wins. So in `scenario s { loads max; set IO:2 scenario=idle }`, board IO:2 runs at its idle level and everything else at max.
 
@@ -254,7 +285,7 @@ Each layer runs only if the previous layers produced no errors, and reports all 
 3. **Model and references:**
    - Loading: `file-not-found`, `library`, `duplicate-part`, `duplicate-design`, `ambiguous-part`, `ambiguous-design`, `unknown-design`, `kind-mismatch`, and the warning `unknown-part` for a near-miss part name
    - Hierarchy: `bad-name`, `template`, `unknown-port`, `unbound-port`, `duplicate-port`, `duplicate-board`, `board-cycle`, and info `ignored-rules`, `standalone`
-   - Function definitions: `port-count`, `missing-voltage`, `missing-efficiency`, `missing-load`, `load-model`, `efficiency`, `setpoint-range`
+   - Function definitions: `port-count`, `missing-voltage`, `missing-efficiency`, `missing-load`, `load-model`, `active-range`, `efficiency`, `setpoint-range`
    - Duplicates: `duplicate-net`, `duplicate-chip`, `duplicate-function`, `duplicate-scenario`
    - References: `undefined-net`, `bad-reference`, `conflicting-link`, `undefined-scenario`, `scenario-cycle`
 4. **Topology:** `unconnected-input`, `undriven-net`, `multiple-drivers`, `cycle`, and warnings `unused-net`, `unloaded-net`, `unconnected-output`

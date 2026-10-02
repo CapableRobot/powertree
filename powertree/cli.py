@@ -23,6 +23,8 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("file")
     r.add_argument("-s", "--scenario", action="append", help="scenario(s) to run (default: all)")
     r.add_argument("--json", action="store_true", help="machine-readable output")
+    r.add_argument("--load-lines", action="store_true",
+                   help="add a table of each consumer's load lines (current and power per line)")
     r.add_argument("--summary", action="store_true",
                    help="functions except consumers, plus the Board, Group and Power tables")
 
@@ -33,6 +35,8 @@ def main(argv: list[str] | None = None) -> int:
                                           "(default: DOT on stdout)")
     g.add_argument("-T", "--format", dest="fmt", help="output format if it differs from the extension")
     g.add_argument("--dpi", type=int, default=200, help="resolution for raster formats like PNG (default 200)")
+    g.add_argument("--load-lines", action="store_true",
+                   help="list each consumer's load lines in its box")
     g.add_argument("--no-stack", action="store_true", help="draw every instance separately")
     g.add_argument("--expand", action="append", default=[], metavar="SELECTOR",
                    help="draw these instances separately, e.g. IO:2 or IO:2..3 (repeatable)")
@@ -68,7 +72,7 @@ def main(argv: list[str] | None = None) -> int:
             print(line)
     if a.cmd == "report" and an.design is not None:
         for res in an.results.values():
-            print(scenario_text(an, res, summary=a.summary))
+            print(scenario_text(an, res, summary=a.summary, load_lines=a.load_lines))
     if a.cmd == "dot" and an.results:
         name = a.scenario or next(iter(an.results))
         layout = None
@@ -76,7 +80,7 @@ def main(argv: list[str] | None = None) -> int:
             from .render import plain_layout
             layout = plain_layout(a.dot)
         dot = to_dot(an, name, stack=not a.no_stack, expand=a.expand, collapse_boards=a.collapse_boards,
-                     wrap=a.wrap, rankdir=a.rankdir, layout=layout)
+                     wrap=a.wrap, rankdir=a.rankdir, layout=layout, load_lines=a.load_lines)
         if not a.output:
             print(dot)
         else:

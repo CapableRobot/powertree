@@ -17,10 +17,23 @@ from .diagnostics import Diagnostics
 from .expr import ExprError
 from .model import Design, Efficiency, Function, Port
 from .scenario import Effective
-from .units import AMP, VOLT, Q, VSpec, fmt, pct
+from .units import AMP, VOLT, WATT, Q, VSpec, fmt, pct
 
 MAX_ITER = 200
 TOL = 1e-12
+
+
+def line_text(line) -> str:
+    """('SPE', 3, 6, 0.0255, 0.028) -> 'SPE 3/6: 25.5 mA  28 mW'"""
+    label, n, of, i, p = line
+    count = "" if n is None else (f" {n}/{of}" if of is not None else f" ×{n}")
+    name = f"{label}{count}".strip()
+    return f"{name + ': ' if name else ''}{fmt(i, AMP)}  {fmt(p, WATT)}"
+
+
+def active_note(active) -> str:
+    """[('PLL', 2, 4), ('lane', 1, None)] -> '2/4 PLL, 1 lane'"""
+    return ", ".join(f"{n}/{of} {per}" if of is not None else f"{n} {per}" for per, n, of in active)
 
 
 @dataclass
@@ -47,6 +60,8 @@ class FuncResult:
     imax: float | None = None
     active_in: Port | None = None
     offboard: bool = False
+    active: list = field(default_factory=list)     # consumer: [(element, enabled, available)]
+    lines: list = field(default_factory=list)      # consumer: [(label, count|None, of, current, power)]
 
 
 @dataclass
@@ -176,14 +191,33 @@ class _Solver:
             return None
         return self.ov.get(f.path, {}).get("imax", f.outs[0].imax)
 
-    def load(self, f: Function) -> tuple[str, float, bool]:
+    def offboard(self, f: Function) -> bool:
+        return any(ld.offboard for ld in f.loads)
+
+    def active(self, f: Function) -> list[tuple[str, int, int | None]]:
+        """(element, enabled count, available) for each scaled load line."""
+        o = self.ov.get(f.path, {})
+        return [(ld.per, o.get(ld.per, ld.active), ld.of) for ld in f.loads if ld.per]
+
+    def lines(self, f: Function) -> list[tuple[str, float, str, int, int | None]]:
+        """Load lines for this scenario as (model, value scaled by the active count, label, count,
+        available). A scenario `set ... i=/p=/r=` replaces all lines with that single load."""
         o = self.ov.get(f.path, {})
         for m in ("i", "p", "r"):
             if m in o:
-                return m, o[m], f.load.offboard if f.load else False
-        ld = f.load
-        val = {"nom": ld.nom, "min": ld.min, "max": ld.max}[self.eff.load_level(f.path)]
-        return ld.model, val, ld.offboard
+                return [(m, o[m], "scenario override", 1, None)]
+        level = self.eff.load_level(f.path)
+        out = []
+        for k, ld in enumerate(f.loads, 1):
+            n = o.get(ld.per, ld.active) if ld.per else ld.active
+            val = {"nom": ld.nom, "min": ld.min, "max": ld.max}[level]
+            label = ld.desc or ld.per or (f"load {k}" if len(f.loads) > 1 else "")
+            if ld.per and ld.desc:
+                label = f"{ld.desc} ({ld.per})"
+            # n identical elements: n x current, n x power, or n resistors in parallel
+            scaled = 0.0 if n == 0 else (n * val if ld.model != "r" else val / n)
+            out.append((ld.model, scaled, label, n, ld.of if ld.per else None))
+        return out
 
     def vcap(self, f: Function, vin: float, i: float) -> float:
         """Highest output the converter can produce at this input (vlim=), or inf."""
@@ -287,17 +321,19 @@ class _Solver:
                 src = self.net(f.ins[0].net)
                 if src is None:
                     continue
-                model, val, _ = self.load(f)
-                if model == "i":
-                    ii = val
-                elif src.v <= 0:
-                    self.errors.append(("collapse", f"{f.path}: supply voltage collapsed to "
-                                                    f"{fmt(src.v, VOLT)}", f))
-                    ii = 0.0
-                elif model == "p":
-                    ii = val / src.v
-                else:
-                    ii = src.v / val
+                ii = 0.0
+                for model, val, *_ in self.lines(f):
+                    if val == 0:
+                        continue
+                    if model == "i":
+                        ii += val
+                    elif src.v <= 0:
+                        self.errors.append(("collapse", f"{f.path}: supply voltage collapsed to "
+                                                        f"{fmt(src.v, VOLT)}", f))
+                    elif model == "p":
+                        ii += val / src.v
+                    else:
+                        ii += src.v / val
                 self.i_in[id(f.ins[0])] = ii
             elif f.kind == "converter":
                 src = self.net(f.ins[0].net)
@@ -411,8 +447,21 @@ def solve(d: Design, eff: Effective) -> Result:
             r.heat = r.iout ** 2 * f.r
             source_power += r.pout
         elif f.kind == "consumer":
-            _, _, ob = s.load(f)
+            ob = s.offboard(f)
             r.offboard = ob
+            r.active = s.active(f)
+            v = r.vin
+            for model, val, label, n, of in s.lines(f):
+                if not r.powered or v is None or val == 0:
+                    i_line = 0.0
+                elif model == "i":
+                    i_line = val
+                elif model == "p":
+                    i_line = val / v if v > 0 else 0.0
+                else:
+                    i_line = v / val
+                scaled = of is not None or n != 1
+                r.lines.append((label, n if scaled else None, of, i_line, i_line * (v or 0.0)))
             r.heat = 0.0 if ob else r.pin
             load_power += r.pin
             offboard += r.pin if ob else 0.0
